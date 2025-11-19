@@ -21,298 +21,7 @@ library(hettx)
 library(latex2exp)
 ```
 
-# A statement of the saturation hypothesis and its pitfalls
-
-The _saturation hypothesis_ posits that changes in soil organic carbon (SOC) are _moderated_ by baseline SOC levels. 
-Suppose we draw $n$ plots from an infinite superpopulation. 
-$B_i$ is the baseline SOC in plot $i$, $Y_i$ is SOC at followup, and $D_i = Y_i - B_i$ is the change in SOC.
-[Slessarev et al (2022)](https://onlinelibrary.wiley.com/doi/full/10.1111/gcb.16491) note that the common practice of regressing $D_i$ on $B_i$ can lead to apparent correlations that are mere artifacts of the estimation process. For example, when $(Y_{i}, B_{i}) \sim \mathcal{N}(\boldsymbol{0}_2,\mbox{diag}(1))$, there is clearly no association between baseline and followup SOC. However, naively regressing $D_i$ on $B_i$ will lead to specious evidence for the hypothesis:
-```{r}
-n <- 50
-Y <- rnorm(n)
-B <- rnorm(n)
-D <- Y - B
-plot(D ~ B, pch = 20)
-abline(lm(D ~ B), col = 'red')
-```
-
-
-
-# The saturation hypothesis in a causal model
-
-## Moderation or dose-response?
-
-In a causal model, saturation can be rigorously defined from at least two perspectives: 
-
-1. Saturation entails that baseline SOC acts as a _moderator_ of treatment. In this context, we are interested in estimating the _conditional average treatment effect_ (CATE), where baseline SOC is the variable conditioned on. Specifically, if SOC saturates, we expect the CATE to be decreasing in baseline SOC: treating plots with low baseline SOC will sequester more carbon than treating plots with high baseline SOC (all else equal). 
-If this hypothesis is true, the implication is to treat plots with lower SOC, _ceteris parabus_, to optimize sequestration under a policy constraint (i.e., a limited budget).
-This is the view taken in
-[Slessarev et al (2023)](https://onlinelibrary.wiley.com/doi/epdf/10.1111/gcb.16491) and works cited there.
-
-![Does baseline SOC as a moderator? Regression to the mean biases naive estimates of the CATE. Source: Slessarev et al (2023)](slessarev_fig2.png)
-
-2. With carbon inputs considered as a continuous treatment, saturation entails a concave _dose-response curve_, possibly asymptoting to a threshold (the point at which the soil is saturated with SOC). 
-This version implies that treatment is most effective on the margin: going from no inputs to low inputs sequesters more SOC on average than going from medium inputs to high inputs. 
-If this hypothesis is true, the implication is to evenly distribute treatment across plots to optimize sequestration. 
-This is the view taken in [Stewart et al (2007)](https://www.jstor.org/stable/20456555?typeAccessWorkflow=login), which considers a dose-response curve relating inputs to _steady-state SOC_ (to which SOC levels will converge over time).
-
-
-![Continuous carbon inputs have a concave dose-response curve (right hand side). There are diminishing returns of additional inputs for steady state SOC, approached over time (left hand side). Source: Stewart et al (2007)](stewart_fig1.png)
-
-
-## Baseline SOC as a moderator
-
-Suppose we are interested in a binary treatment.
-Plot $i$ has baseline SOC $i$, and _potential outcomes_ $Y_i(1)$ and $Y_i(0)$ indicating its followup SOC if on treatment or on control (respectively).
-Jointly, $(Y_i(1), Y_i(0)) \sim F$, where $F$ is the distribution of an infinite superpopulation. 
-The (unobservable) _treatment effect_ for plot $i$ is $\tau_i = Y_i(1) - Y_i(0)$. 
-The _population average treatment effect_: 
-$$\bar{\tau} := \mathbb{E}_F[\tau_i]$$
-is a common parameter of interest. 
-We denote the _conditional average treatment effect_ (CATE) as
-$$\tau(b) := \mathbb{E}_F[\tau_i \mid B_i = b].$$
-That is, $\tau(b)$ gives the expected treatment effect for a plot with baseline SOC $b$. 
-With these definitions in hand, the saturation hypothesis can be restated as positing that $\tau(b)$ is a decreasing function: if $b \geq b'$ then $\tau(b) \leq \tau(b')$.
-Conversely, and somewhat more generally, we might consider the null that baseline SOC is not a moderator. Under this null, $\tau(b)$ is constant and specifically $\tau(b) = \bar{\tau}$.
-We may decompose $\tau(b)$ as:
-$$\tau(b) = \mathbb{E}_F[Y_i(1) - Y_i(0) \mid B_i = b] = \mathbb{E}_F[Y_i(1) \mid B_i = b] - \mathbb{E}_F[ Y_i(0) \mid B_i = b] =: \mu_1(b) - \mu_0(b).$$
-So $\mu_1(b)$ is the conditional expectation under treatment for plots with baseline SOC $b$, and likewise $\mu_0(b)$ is the conditional expectation for control plots.
-
-
-### Data, estimation, and testing 
-
-Consider a binary treatment and let $Z_i \in \{0,1\}$ be an indicator of treatment status: 1 if plot $i$ receives treatment and 0 if it receives control. 
-When a plot enters the study, it receives treatment according to a coinflip so that $Z_i \sim \mbox{Bernoulli}(p_i)$, typically with $p_i = 0.5$ leading to a balanced experiment.
-The _observed outcome_ for plot $i$ is $Y_i := Y_i(Z_i)$, i.e., the potential outcome for the treatment it actually received.
-Overall, we observe $n$ IID triples $(Y_i, Z_i, B_i) {\sim} \mathcal{P}$.  
-
-An estimator $\hat{\tau}(b)$ of $\tau(b)$ can be obtained by separately estimating $\mu_1(b)$ and $\mu_0(b)$, and taking the difference of estimators:
-$$\hat{\tau}(b) := \hat{\mu}_1(b) - \hat{\mu}_0(b).$$
-This is the _T-learner_ in the terminology of [Kunzel et al (2019)](https://arxiv.org/abs/1706.03461). 
-The base estimators $\hat{\mu}_1(b)$ and $\hat{\mu}_0(b)$ could be specified as stepwise (post-stratified) functions of $b$, a linear model in $b$ fit with ordinary least squares, a spline in $b$, a shape-constrained nonparametric estimator, K-nearest neighbors, etc. 
-
-We need a confidence band for $\tau(b)$ that guarantees coverage uniformly in $b$. If we have Bonferonni-adjusted level-$(1-\alpha/2)$ confidence intervals separately for $\mu_1(b)$ and $\mu_0(b)$, a lower bound on $\tau(b)$ is the lower bound on $\mu_1(b)$ minus the upper bound on $\mu_0(b)$; vice versa for an upper bound on $\tau(b)$. 
-
-
-<!----
-### The strong null and tests with power against alternative of saturation.
-
-The strong null posits $\tau_i = 0$ for all $i$. More generally, $\tau_i = \delta$ for all $i$ implies that $\tau(b) = \bar{\tau}$, although the reverse is not true. Take the null hypothesis to be the composite null $H_0: \bigcup_{\delta \in \mathbb{R}} \tau_i = \delta$ and consider alternatives of the form $H_A: \tau_i = f(b_i)$ for some decreasing $f$. 
-
-
-What test statistics has power against this alternative? 
-Consider a cut point $c \in [\min(b_i), \max(b_i)]$, for example $c = \mbox{median}(b_i)$, and take $\mathcal{I}_{0L}$ and $\mathcal{I}_{1L}$ to denote indices of observed control and treatment outcomes with $b_i < c$;  similarly, $\mathcal{I}_{0H}$ and $\mathcal{I}_{1H}$ denote outcomes with $b_i \geq c$. The mean difference in differences: 
-$$\left (|\mathcal{I}_{1L}| \sum_{i \in \mathcal{I}_{1L}} Y_i - |\mathcal{I}_{0L}| \sum_{i \in \mathcal{I}_{0L}} Y_i\right) - \left (|\mathcal{I}_{1H}| \sum_{i \in \mathcal{I}_{1H}} Y_i - |\mathcal{I}_{0H}| \sum_{i \in \mathcal{I}_{0H}} Y_i\right) $$
-will generally be large if $f$ is a decreasing function and small otherwise. 
-There may be more clever test statistics that have more power for certain classes of increasing functions.
-
-### The weak null 
-
-The weak null in this context is that the CATE is not constant over $b_i$. In particular the weak null is:
-$$H_0: \tau(b) = \bar{\tau}.$$
-Suppose we estimate $\tau(b)$ with hat $\hat{\tau}(b)$ and construct an approximate $(1-\alpha)$ confidence band $[\hat{L}(b),\hat{U}(b)]$ with uniform coverage in $b$:
-$$\sup_b \mathbb{P}\left (\tau(b) \in [\hat{L}(b),\hat{U}(b)] \right ) \geq 1 - \alpha.$$
-Such a confidence interval can be computed using the above suggestion of taking differences in Bonferonni-adjusted intervals for $\mu_0(b)$ and $\mu_1(b)$. 
-Such intervals can generally be constructed asymptotically by normal theory or bootstrapping.
-An intuitive idea is then to check whether there is any constant function that can fit entirely within this band. If there is, then we do not reject the null. 
-This can be achieved by a grid search.
-
-### Decomposing treatment effect variation in the linear model
-
-Take $\boldsymbol{X}_i$ to be a length-$p$ vector of baseline covariates. 
-Under a randomization inference framework (that is, without a superpopulation model) [Li et al, 2019](https://arxiv.org/abs/1605.06566) define
-
-$$\tau_i := \boldsymbol{X}_i \boldsymbol{\beta} + \varepsilon_i$$
-where 
-$$\boldsymbol{\beta} = \mbox{argmin}_{b\in\mathbb{R}^p} \sum_{i=1}^n (\tau_i - \boldsymbol{X}_i^T b)^2$$
-is a finite-population least squares regression coefficient. Then $\boldsymbol{X}_i^T \boldsymbol{\beta}$ is the systematic treatment effect variation explained by the covariates, while $\varepsilon_i$ captures idiosyncratic variation in the treatment effect. Without a superpopulation, all these parameters are fixed numbers. When $(Y_i(1), Y_i(0), Z_i, B_i)$ are drawn from a superpopulation, $\boldsymbol{\beta}$, $\varepsilon_i$, and $\boldsymbol{X}_i$ are themselves random.  
-
-In our context, we would let $\boldsymbol{X}_i = B_i$, which induces an assumption of linearity in the effect of baseline SOC. Alternatively, a nonparametric strategy would take $\boldsymbol{X}_i = f(B_i)$, where $f$ is some suitably chosen basis expansion; for example a polynomial or spline basis. 
-
-$\boldsymbol{\beta}$ can be estimated consistently, with bias $\mathcal{O}(n^{-1})$, by fitting the regression model:
-$$Y_i = \boldsymbol{X}_i^T \boldsymbol{\gamma} + Z_i \boldsymbol{X}_i^T \boldsymbol{\beta} + u_i.$$
-The fitted estimate is:
-$$\hat{\boldsymbol{\beta}} = \widehat{\boldsymbol{S}}^{-1}_{xx,1} \widehat{\boldsymbol{S}}^{-1}_{x1} - \widehat{\boldsymbol{S}}^{-1}_{xx,0} \widehat{\boldsymbol{S}}^{-1}_{x0}$$
-where 
-$$\widehat{\boldsymbol{S}}^{-1}_{xx,z} = \frac{1}{n_z} \sum_{i=1}^n I(Z_i=z) \boldsymbol{X}_i \boldsymbol{X}_i^T$$ 
-is the covariance matrix of the covariates computed _within_ treatment group $z \in \{0,1\}$, and
-$$\widehat{\boldsymbol{S}}^{-1}_{xz} = \frac{1}{n_z} \sum_{i=1}^n I(Z_i=z) Y_i \boldsymbol{X}_i$$ 
-captures correlations of observed outcomes with covariates within each treatment group. 
-
-Li et al (2019) derive a Wald-type test that the CATE is constant using the asymptotic normality of $\widehat{\boldsymbol{\beta}}$. Let $\widehat{\boldsymbol{\beta}}_1$ be equal to $\widehat{\boldsymbol{\beta}}$ with the intercept dropped. The test rejects when:
-$$\widehat{\boldsymbol{\beta}}_1^T \widehat{\mbox{cov}}^{-1}(\widehat{\boldsymbol{\beta}}_1) \widehat{\boldsymbol{\beta}}_1 > \chi^2_{p-1}(1-\alpha)$$
-where $\chi^2_{p-1}(1-\alpha)$ is the $(1-\alpha)$ quantile of the chi-squared distribution with $p-1$ degrees of freedom. The covariance estimator:
-$$\widehat{\mbox{cov}}^{-1}(\widehat{\boldsymbol{\beta}}) :=  \widehat{\boldsymbol{S}}^{-1}_{xx,1} \left [\frac{\hat{S}_1(\hat{e} \boldsymbol{X})}{n_1} \right ]^{-1} \widehat{\boldsymbol{S}}^{-1}_{xx,1} +  \widehat{\boldsymbol{S}}^{-1}_{xx,0} \left [\frac{\hat{S}_0(\hat{e} \boldsymbol{X})}{n_0} \right ]^{-1} \widehat{\boldsymbol{S}}^{-1}_{xx,0}$$
-
-is the sum of the sandwich estimators of the covariance of $\hat{\boldsymbol{\beta}}$ in each treatment group.
-Of course, this test is only strictly valid asympotically. 
---->
-
-
-# Individual treatment effects
-
-```{r}
-N <- 10000
-tau_bar <- 1
-tau_i_gauss <- rnorm(N, mean = tau_bar, sd = 0.25)
-tau_i_mixture <- c(rnorm(N/2, mean = tau_bar + 2, sd = 0.25), rnorm(N/2, mean = tau_bar - 2, sd = 0.25))
-tau_frame <- data.frame(
-  dist = c(rep("Gaussian", N), rep("Mixture", N)), 
-  tau = c(tau_i_gauss, tau_i_mixture)) %>%
-  mutate(positive = as_factor(ifelse(tau > 0, 1, 0)))
-ggplot(tau_frame, aes(tau, fill = positive)) +
-  geom_vline(xintercept = 0, linetype = 'dashed') +
-  ylab("") +
-  xlab(TeX("$\\tau_i$ (\\% SOC)")) +
-  geom_histogram(bins = 100) +
-  facet_grid(~ dist) +
-  theme_bw() +
-  theme(axis.title.y=element_blank(),
-        axis.text.y=element_blank(),
-        axis.ticks.y=element_blank(),
-        text = element_text(size = 18),
-        legend.position = "none")
-```
-
-# Some examples
-
-As a first example we take an experiment with $n = 100$, $Z_i \sim \mbox{Bernoulli}(0.5)$, $B_i \sim \mathcal{N}(0,1)$, and
-\begin{align}
-Y_i(1) &= \exp(-B_i) + \varepsilon_i(1)\\
-Y_i(0) &= \varepsilon_i(0),
-\end{align}
-where $(\varepsilon_i(1), \varepsilon_i(0)) \sim \mathcal{N}_2(\boldsymbol{0}_2, {\mathbf 1}_{2\times2})$.
-We specify $\hat{\mu}_z(b)$ as either OLS or as a nonparametric loess estimator for $z \in \{0,1\}$. 
-
-```{r}
-n <- 100
-alpha <- 0.05
-Z <- rbinom(n, size = 1, prob = 0.5)
-B <- rnorm(n)
-b_grid <- seq(-2,2,by=.01)
-
-mu_1 <- function(x){exp(-x)}
-mu_0 <- function(x){0*x}
-Y1 <- mu_1(B) + rnorm(n)
-Y0 <- mu_0(B) + rnorm(n)
-Y <- Z*Y1 + (1-Z)*Y0
-D <- Y - B
-
-#naive estimate
-naive_difference <- lm(D ~ B)
-#linear model estimates of CATE
-mu_hat_1_ols <- predict(lm(Y ~ B, subset = Z == 1), newdata = data.frame(B = b_grid), interval = "confidence", level = 1-alpha/2)
-mu_hat_0_ols <- predict(lm(Y ~ B, subset = Z == 0), newdata = data.frame(B = b_grid), interval = "confidence", level = 1-alpha/2)
-#nonparametric estimates via splines
-mu_hat_1_spline <- predict(lm(Y ~ bs(B, df = 5), subset = Z == 1), newdata = data.frame(B = b_grid), interval = "confidence", level = 1-alpha/2)
-mu_hat_0_spline <- predict(lm(Y ~ bs(B, df = 5), subset = Z == 0), newdata = data.frame(B = b_grid), interval = "confidence", level = 1-alpha/2)
-
-
-true_cate <- mu_1(b_grid) - mu_0(b_grid)
-naive_predictions <- predict(naive_difference, data.frame(B = b_grid), interval = "confidence", level = 1-alpha)
-tau_hat_ols <- cbind(
-  "estimate" = mu_hat_1_ols[,1] - mu_hat_0_ols[,1], 
-  "lower_bound" = mu_hat_1_ols[,2] - mu_hat_0_ols[,3],
-  "upper_bound" = mu_hat_1_ols[,3] - mu_hat_0_ols[,2])
-tau_hat_spline <- cbind(
-  "estimate" = mu_hat_1_spline[,1] - mu_hat_0_spline[,1], 
-  "lower_bound" = mu_hat_1_spline[,2] - mu_hat_0_spline[,3],
-  "upper_bound" = mu_hat_1_spline[,3] - mu_hat_0_spline[,2])
-
-plot(y = Y, x = B, pch = 20, col = ifelse(Z == 1, 'steelblue', 'darkorange3'))
-#points(y = Y0, x = B, pch = 20, col = 'darkorange3')
-points(true_cate ~ b_grid, type = 'l', lwd = 3)
-#naive predictions and confidence band
-points(naive_predictions[,1] ~ b_grid, type = 'l', lwd = 2, lty = 'solid', col = 'red')
-points(naive_predictions[,2] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'red')
-points(naive_predictions[,3] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'red')
-#linear predictions and confidence band
-points(tau_hat_ols[,1] ~ b_grid, type = 'l', lwd = 2, lty = 'solid', col = 'green')
-points(tau_hat_ols[,2] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'green')
-points(tau_hat_ols[,3] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'green')
-#nonparametric predictions and confidence band
-points(tau_hat_spline[,1] ~ b_grid, type = 'l', lwd = 2, lty = 'solid', col = 'blue')
-points(tau_hat_spline[,2] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'blue')
-points(tau_hat_spline[,3] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'blue')
-legend(x = 0, y = max(Y), legend = c("True CATE", "Naive estimate", "Linear CATE estimate", "Spline CATE estimate"), lty = c("solid", rep("solid", 3)), col = c("black", "red", "green", "blue"))
-```
-<!---
-Following [Li et al, 2019](https://arxiv.org/abs/1605.06566) we can test the hypothesis $\boldsymbol{\beta}_1 = 0$, which posits a zero CATE across levels of baseline SOC whatsoever:
---->
-```{r WIP: test for zero CATE, eval = FALSE, include = FALSE}
-#test with spline model
-mod_1 <- lm(Y ~ bs(B, df = 5), subset = Z == 1)
-mod_0 <- lm(Y ~ bs(B, df = 5), subset = Z == 0)
-X_1 <- subset(bs(B, df = 5), subset = Z == 1)
-X_0 <- subset(bs(B, df = 5), subset = Z == 0)
-S_x1 <- (1/nrow(X_1)) * Y[Z==1] %*% X_1
-S_x0 <- (1/nrow(X_0)) * Y[Z==0] %*% X_0
-S_xx1 <- (1/nrow(X_1)) * X_1 %*% t(X_1)
-S_xx0 <- (1/nrow(X_0)) * X_0 %*% t(X_0)
-S_e1 <- cov(residuals(mod_1) * X_1)
-S_e0 <- cov(residuals(mod_0) * X_0)
-beta_hat <- solve(S_xx1) %*% S_x1 - solve(S_xx0) %*% S_x0
-```
-
-
-Here is another example, where there is no saturation effect: $\tau(b) = 0$. The CATE estimates are approximately correct, while the naive estimate finds a saturation effect where none exists.
-
-
-```{r}
-n <- 100
-alpha <- 0.05
-Z <- rbinom(n, size = 1, prob = 0.5)
-B <- rnorm(n)
-
-
-mu_1 <- function(x){0*x}
-mu_0 <- function(x){0*x}
-Y1 <- mu_1(B) + rnorm(n)
-Y0 <- mu_0(B) + rnorm(n)
-Y <- Z*Y1 + (1-Z)*Y0
-D <- Y - B
-
-#naive estimate
-naive_difference <- lm(D ~ B)
-#linear model estimates of CATE
-mu_hat_1_ols <- predict(lm(Y ~ B, subset = Z == 1), newdata = data.frame(B = b_grid), interval = "confidence", level = 1-alpha/2)
-mu_hat_0_ols <- predict(lm(Y ~ B, subset = Z == 0), newdata = data.frame(B = b_grid), interval = "confidence", level = 1-alpha/2)
-#nonparametric estimates via loess
-mu_hat_1_spline <- predict(lm(Y ~ bs(B, df = 5), subset = Z == 1), newdata = data.frame(B = b_grid), interval = "confidence", level = 1-alpha/2)
-mu_hat_0_spline <- predict(lm(Y ~ bs(B, df = 5), subset = Z == 0), newdata = data.frame(B = b_grid), interval = "confidence", level = 1-alpha/2)
-
-
-true_cate <- mu_1(b_grid) - mu_0(b_grid)
-naive_predictions <- predict(naive_difference, data.frame(B = b_grid), interval = "confidence", level = 1-alpha)
-tau_hat_ols <- cbind(
-  "estimate" = mu_hat_1_ols[,1] - mu_hat_0_ols[,1], 
-  "lower_bound" = mu_hat_1_ols[,2] - mu_hat_0_ols[,3],
-  "upper_bound" = mu_hat_1_ols[,3] - mu_hat_0_ols[,2])
-tau_hat_spline <- cbind(
-  "estimate" = mu_hat_1_spline[,1] - mu_hat_0_spline[,1], 
-  "lower_bound" = mu_hat_1_spline[,2] - mu_hat_0_spline[,3],
-  "upper_bound" = mu_hat_1_spline[,3] - mu_hat_0_spline[,2])
-
-
-plot(y = Y, x = B, pch = 20, col = ifelse(Z == 1, 'steelblue', 'darkorange3'))
-#points(y = Y0, x = B, pch = 20, col = 'darkorange3')
-points(true_cate ~ b_grid, type = 'l', lwd = 3)
-#naive predictions and confidence band
-points(naive_predictions[,1] ~ b_grid, type = 'l', lwd = 2, lty = 'solid', col = 'red')
-points(naive_predictions[,2] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'red')
-points(naive_predictions[,3] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'red')
-#ols predictions and confidence band
-points(tau_hat_ols[,1] ~ b_grid, type = 'l', lwd = 2, lty = 'solid', col = 'green')
-points(tau_hat_ols[,2] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'green')
-points(tau_hat_ols[,3] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'green')
-#spline predictions and confidence band
-points(tau_hat_spline[,1] ~ b_grid, type = 'l', lwd = 2, lty = 'solid', col = 'blue')
-points(tau_hat_spline[,2] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'blue')
-points(tau_hat_spline[,3] ~ b_grid, type = 'l', lwd = 1, lty = 'dashed', col = 'blue')
-legend(x = 0, y = max(Y), legend = c("True CATE", "Naive estimate", "OLS CATE estimate", "LOESS CATE estimate"), lty = c("solid", rep("solid", 3)), col = c("black", "red", "green", "blue"))
-```
-
-# Potential trajectories
+# Plot potential trajectories
 ```{r}
 time <- seq(0, 10, length.out = 100)
 response_1 <- log(1 + 2*time)
@@ -332,12 +41,12 @@ pt_plot <- ggplot(pt_data, aes(x = x, y = y, color = scenario)) +
   ylim(-1,10) +
   scale_colour_manual(values = c("steelblue", "firebrick", "forestgreen", "darkorange3")) +
   theme(
-    text = element_text(size = 18), 
+    text = element_text(linewidth = 18), 
     axis.text.y = element_blank(), 
     axis.ticks.y = element_blank(),
     axis.text.x = element_blank(),
     axis.ticks.x = element_blank(),
-    legend.text = element_text(size = 14),
+    legend.text = element_text(linewidth = 14),
     legend.title = element_blank(),
     panel.border = element_blank(),
     legend.key.width = unit(1, "cm")) +
@@ -440,6 +149,13 @@ cate_plot <- ggplot(cate_data, aes(x = x, y = y, color = scenario)) +
   labs(title = "(a) Moderation", x = "Baseline SOC", y = "SOC sequestered")
 ```
 
+```{r}
+dr_plot
+```
+
+```{r}
+cate_plot
+```
 
 # NRCS Study
 
@@ -531,7 +247,7 @@ treatment_effect <- nrcs_data %>%
 ```
 
 
-```{r set up parameters for simulations}
+```{r set up parameters for NRCS simulations}
 N = 5000 #population size 
 assay_variability <- 0 #assume lab work is error-free for now
 #effect size as a function of the baseline spatial heterogeneity
@@ -547,7 +263,7 @@ measurement_noise <- round(c(
                        2) #variability due to sampling / within-plot spatial heterogeneity. n = 5,30,100 samples per plot
 n <- c(10, 100, 1000) #size of experiment
 
-simulation_parameters <- expand.grid(
+nrcs_parameters <- expand.grid(
   ate = ate, 
   moderator_effect = moderator_effect, 
   idiosyncratic_teh = idiosyncratic_teh, 
@@ -555,175 +271,23 @@ simulation_parameters <- expand.grid(
   n = n)
 ```
 
-```{r function to simulate population and study}
-num_sims <- 200
-run_simulation <- function(ate, moderator_effect, idiosyncratic_teh, measurement_noise, n){
-  #simulate at population level
-  b <- rnorm(N, mean = baseline_avg, sd = baseline_ap_var) #baseline %TC
-  teh_noise_i <- rnorm(N, mean = 0, sd = sqrt(idiosyncratic_teh))
-  y_0 <- b + rnorm(N, mean = mean_change_ctl, sd = sqrt(ap_var_change_ctl))
-  y_1 <- y_0 + ate + moderator_effect * stdize(b) + teh_noise_i
-  #parameters to be estimated
-  pate <- mean(y_1) - mean(y_0) #(finite) population average treatment effect
-  fpme <- coef(lm((y_1 - y_0) ~ stdize(b)))['stdize(b)'] #finite-population moderator effect
-  #for now, assume the policy is not budget constrained
-  oracle_mean <- sum(pmax(y_0, y_1))/N #using actual ITEs
-  restricted_oracle_mean <- max(sum(y_1), sum(y_0))/N #total for best restricted regime (treat or don't treat whole population)
-  
-  #storage for results
-  #each result is a matrix with columns ['estimate','lower_ci','upper_ci']
-  diff_means_results <- matrix(0, nrow = num_sims, ncol = 3) #difference-in-means estimate of PATE
-  diff_diffs_results <- matrix(0, nrow = num_sims, ncol = 3) #difference-in-differences estimate of PATE
-  ols_est_results <- matrix(0, nrow = num_sims, ncol = 3) #OLS with full baseline interaction estimate of PATE
-  mod_est_results <- matrix(0, nrow = num_sims, ncol = 3) #OLS estimate of moderator effect
-  naive_mod_est_results <- matrix(0, nrow = num_sims, ncol = 3) #"naive" estimate from regressing followup SOCs on differences
-  optimal_policy_results <- rep(0, num_sims) #OLS estimate of optimal regime by ITE prediction
-  restricted_optimal_policy_results <- rep(0, num_sims)
-  for(i in 1:num_sims){
-    #study level potential outcomes and covariates
-    sample_index <- sample(1:N, size = n, replace = FALSE)
-    #sample from population and add measurement noise from core sampling (currently commented out)
-    baseline_noise <-  rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    B <- b[sample_index] + baseline_noise
-    B_std <- stdize(b)[sample_index] + baseline_noise
-    Y_0 <- y_0[sample_index] + rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    Y_1 <- y_1[sample_index] + rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    #balanced complete randomization
-    trt_index <- sample(1:n, size = n/2, replace = FALSE)
-    
-    #estimate average treatment effect
-    #difference in means
-    diff_means <- mean(Y_1[trt_index]) - mean(Y_0[-trt_index])
-    diff_means_se <- sqrt(var(Y_1[trt_index])/(n/2) + var(Y_0[trt_index])/(n/2)) 
-    diff_means_ci <- c(diff_means - qnorm(0.975) * diff_means_se, diff_means + qnorm(0.975) * diff_means_se)
-    diff_means_results[i,] <- c(diff_means, diff_means_ci)
-    #difference in differences
-    diff_diffs <- mean(Y_1[trt_index] - B[trt_index]) - mean(Y_0[-trt_index] - B[-trt_index])
-    diff_diffs_se <- sqrt(var(Y_1[trt_index] - B[trt_index])/(n/2) + var(Y_0[-trt_index] - B[-trt_index])/(n/2))
-    diff_diffs_ci <- c(diff_diffs - qnorm(0.975) * diff_diffs_se, diff_diffs + qnorm(0.975) * diff_diffs_se)
-    diff_diffs_results[i,] <- c(diff_diffs, diff_diffs_ci)
-    #OLS estimate
-    Z <- rep(0, n) #treatment dummy
-    Z[trt_index] <- 1
-    Y <- Y_0 #pooled observed data
-    Y[trt_index] <- Y_1[trt_index]
-    ols <- lm(Y ~ Z*B_std) #fully interacted OLS, ala Lin (2013) "Agnostic notes..."
-    ols_est <- summary(ols)$coefficients["Z","Estimate"]
-    ols_se <- summary(ols)$coefficients["Z","Std. Error"] #can use usual formula for SE (not sandwich SE) because experiment is balanced; see remark (ii), page 307 of Lin (2013)
-    ols_ci <- c(ols_est - qnorm(0.975) * ols_se, ols_est + qnorm(0.975) * ols_se)
-    ols_est_results[i,] <- c(ols_est, ols_ci)
-    study_data <- data.frame(Y=Y,Z=Z,B_std=B_std,B=B)
-    
-    #estimate moderator effects
-    #using the Ding et al package "hettx" 
-    sys_model <- summary(estimate_systematic(Y ~ Z, interaction.formula = ~ B_std, method = "OLS", data = study_data))
-    # ols_est <- sys_model$ATE
-    # ols_se <- sys_model$SE.ATE
-    # ols_ci <- c(ols_est - qnorm(0.975) * ols_se, ols_est + qnorm(0.975) * ols_se)
-    # ols_est_results[i,] <- c(ols_est, ols_ci)
-    #moderator effects
-    mod_est <- sys_model$coefficients["B_std"]
-    mod_se <- sqrt(sys_model$vcov[2,2])
-    mod_ci <- c(mod_est - qnorm(0.975) * mod_se, mod_est + qnorm(0.975) * mod_se)
-    mod_est_results[i,] <- c(mod_est, mod_ci)
-    #naive estimates of "baseline effects" 
-    D <- Y - B
-    naive_model <- summary(lm(Y ~ D))
-    naive_mod_est <- naive_model$coefficients["D","Estimate"]
-    naive_mod_se <- naive_model$coefficients["D","Std. Error"]
-    naive_mod_ci <- c(naive_mod_est - qnorm(0.975) * naive_mod_se, naive_mod_est + qnorm(0.975) * naive_mod_se)
-    naive_mod_est_results[i,] <- c(naive_mod_est, naive_mod_ci)
-    
-    
-    #estimate optimal policy
-    #predictions of ITEs and estimates of oracle and restricted oracle policies
-    hat_y_1 <- predict(ols, newdata = data.frame(Z = 1, B_std = stdize(b)), interval = "prediction")
-    hat_y_0 <- predict(ols, newdata = data.frame(Z = 0, B_std = stdize(b)), interval = "prediction")
-    est_po_matrix <- cbind(hat_y_1[,1], hat_y_0[,1]) #estimated potential outcome matrix
-    estimated_policy <- apply(est_po_matrix, 1, which.max) #pick out the estimated best treatment for each plot
-    estimated_optimal_mean <- sum(cbind(y_1, y_0)[cbind(1:N,estimated_policy)])/N #return for estimated policy
-    optimal_policy_results[i] <- estimated_optimal_mean 
-    
-    estimated_restricted_optimal_mean <- c(mean(y_0), mean(y_1))[which.max(c(mean(Y_0), mean(Y_1)))] #return for estimated restricted optimal policy
-    restricted_optimal_policy_results[i] <- estimated_restricted_optimal_mean
-  }
-  results <- data.frame(
-    spate = ate, #super-population ATE
-    fpate = pate, #finite-population ATE
-    spme = moderator_effect,
-    fpme = fpme,
-    oracle_mean = oracle_mean,
-    restricted_oracle_mean = restricted_oracle_mean,
-    teh = idiosyncratic_teh, 
-    measurementnoise = measurement_noise,
-    n = n,
-    diffmeans_bias = mean(diff_means_results[,1]) - pate,
-    diffmeans_rmse = sqrt(mean((diff_means_results[,1] - pate)^2)),
-    diffmeans_coverage = mean((diff_means_results[,2]) < pate & (diff_means_results[,3] > pate)),
-    diffmeans_ciwidth = mean(diff_means_results[,3] - diff_means_results[,2]),
-    diffmeans_power = mean(diff_means_results[,2] > 0),
-    diffdiffs_bias = mean(diff_diffs_results[,1]) - pate,
-    diffdiffs_rmse = sqrt(mean((diff_diffs_results[,1] - pate)^2)),
-    diffdiffs_coverage = mean((diff_diffs_results[,2]) < pate & (diff_diffs_results[,3] > pate)),
-    diffdiffs_ciwidth = mean(diff_diffs_results[,3] - diff_diffs_results[,2]),
-    diffdiffs_power = mean(diff_diffs_results[,2] > 0),
-    olsest_bias = mean(ols_est_results[,1]) - pate,
-    olsest_rmse = sqrt(mean((ols_est_results[,1] - pate)^2)),
-    olsest_coverage = mean((ols_est_results[,2]) < pate & (ols_est_results[,3] > pate)),
-    olsest_ciwidth = mean(ols_est_results[,3] - ols_est_results[,2]),
-    olsest_power = mean(ols_est_results[,2] > 0),
-    modest_bias = mean(mod_est_results[,1]) - fpme,
-    modest_rmse = sqrt(mean((mod_est_results[,1] - moderator_effect)^2)),
-    modest_coverage = mean((mod_est_results[,2]) < moderator_effect & (mod_est_results[,3] > moderator_effect)),
-    modest_ciwidth = mean(mod_est_results[,3] - mod_est_results[,2]),
-    naive_modest_bias = mean(naive_mod_est_results[,1]) - fpme,
-    naive_modest_rmse = sqrt(mean((naive_mod_est_results[,1] - moderator_effect)^2)),
-    naive_modest_coverage = mean((naive_mod_est_results[,2]) < moderator_effect & (naive_mod_est_results[,3] > moderator_effect)),
-    naive_modest_ciwidth = mean(naive_mod_est_results[,3] - naive_mod_est_results[,2]),
-    avg_optimal_policy_estimate = mean(optimal_policy_results),
-    avg_restricted_optimal_policy_estimate = mean(restricted_optimal_policy_results)
-  )
-  results
-}
-```
 
 
-```{r test moderator estimation}
-# mod_est <- rep(0, 200)
-# for(i in 1:200){
-#   n <- 30
-#   B <- rnorm(n)
-#   Y_0 <- rnorm(n)
-#   Y_1 <- Y_0 + 1 + B
-#   B_meas <- B + rnorm(n, sd = 0.5) #measurement error can attenuate (bias) moderator estimates
-#   trt <- sample(n, size = n/2, replace = F)
-#   Z <- rep(0, n)
-#   Y <- Y_0
-#   Y[trt] <- Y_1[trt]
-#   Z[trt] <- 1
-#   s_data <- data.frame(Y=Y, Z=Z, B=B, B_meas = B_meas)
-#   
-#   sys_model <- summary(estimate_systematic(Y ~ Z, interaction.formula = ~ B_meas, method = "OLS", data = s_data))
-#   #moderator effects
-#   mod_est[i] <- sys_model$coefficients["B_meas"]
-# }
-# 
-# mean(mod_est)
-# mod_se <- sqrt(sys_model$vcov[2,2])
-# mod_ci <- c(mod_est - qnorm(0.975) * mod_se, mod_est + qnorm(0.975) * mod_se)
-# mod_est_results[i,] <- c(mod_est, mod_ci)
-```
-
-
-```{r run simulations}
+```{r run NRCS simulations}
 all_results <- list()
-for(i in 1:nrow(simulation_parameters)){
-  all_results[[i]] <- run_simulation(
-    ate = simulation_parameters$ate[i], 
-    moderator_effect = simulation_parameters$moderator_effect[i],
-    idiosyncratic_teh = simulation_parameters$idiosyncratic_teh[i],
-    measurement_noise = simulation_parameters$measurement_noise[i], 
-    n = simulation_parameters$n[i])
+for(i in 1:nrow(nrcs_parameters)){
+  param_list_i <- list(
+    baseline_avg = baseline_avg,
+    baseline_ap_var = baseline_ap_var,
+    mean_var_change_ctl = mean_var_change_ctl,
+    ap_var_change_ctl = ap_var_change_ctl,
+    ate = nrcs_parameters$ate[i], 
+    moderator_effect = nrcs_parameters$moderator_effect[i],
+    idiosyncratic_teh = nrcs_parameters$idiosyncratic_teh[i],
+    measurement_noise = nrcs_parameters$measurement_noise[i], 
+    n = nrcs_parameters$n[i]
+  )
+  all_results[[i]] <- run_simulation(param_list_i, num_sims = 200)
 }
 results_frame <- all_results %>% 
   reduce(bind_rows) %>% 

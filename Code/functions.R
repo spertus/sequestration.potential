@@ -2,6 +2,96 @@ library(tidyverse)
 library(grf)
 
 
+estimate_cate <- function(
+    Y,
+    Z,
+    X,
+    x_pop = NULL,
+    learner,
+    ...
+) {
+  # takes data from a size n RCT with uniform assignment and returns an OLS estimate of the science table either for that RCT, or for a size N population with covariates x_pop
+  # inputs:
+    # Y = length-n vector; outcomes in the RCT 
+    # Z = length-n binary vector; treatment assignment generically, 0 denotes control and 1 denotes treatment
+    # X = n-by-p matrix; covariates in RCT
+    # x_pop = N-by-p matrix; covariates in population; may be left out, in which case the science table for the experiment is returned instead. must be in exact same order of covariates as X 
+    # learner = function; 
+    # any additional arguments to the learner function (must be named)
+  # outputs: 
+    # a n-by-2 (default) science table for the experiment or N-by-2 (if x_pop) is given science table for the population
+  
+  # ---- input checks ----
+  stopifnot(
+    is.numeric(Y),
+    is.numeric(Z),
+    length(Y) == length(Z),
+    nrow(X) == length(Y)
+  )
+  
+  if (is.null(x_pop)) {
+    x_pop <- X
+  }
+  
+  stopifnot(ncol(X) == ncol(x_pop))
+  
+  if (!is.function(learner)) {
+    stop("learner must be a function")
+  }
+  
+  # ---- estimate CATEs ----
+  CATEs <- learner(
+    Y = Y,
+    Z = Z,
+    X = X,
+    x_pop = x_pop,
+    ...
+  )
+  
+  # ---- output checks ----
+  if (!is.numeric(CATEs) || length(CATEs) != nrow(x_pop)) {
+    stop("learner must return numeric vector of length nrow(x_pop)")
+  }
+  
+  CATEs
+}
+
+
+learner_ols <- function(Y, Z, X, x_pop, ...) {
+  # function to learn CATE using OLS and make predictions for x_pop
+  X_df     <- as.data.frame(X)
+  x_pop_df <- as.data.frame(x_pop)
+  
+  dat <- data.frame(Y = Y, Z = Z, X_df)
+  
+  mod_ctl <- lm(Y ~ ., data = dat[Z == 0, ])
+  mod_trt <- lm(Y ~ ., data = dat[Z == 1, ])
+  
+  muhat_0 <- predict(mod_ctl, newdata = x_pop_df)
+  muhat_1 <- predict(mod_trt, newdata = x_pop_df)
+  
+  muhat_1 - muhat_0
+}
+
+learner_rf <- function(Y, Z, X, x_pop, ...) {
+  # function to learn CATE using 'causal forest' as described in https://grf-labs.github.io/grf/reference/causal_forest.html
+  if (!requireNamespace("grf", quietly = TRUE)) {
+    stop("Package 'grf' is required for learner_rf")
+  }
+  prop_score <- mean(Z)
+  # causal forest fit using default parameters
+  cf <- grf::causal_forest(
+    X = X,
+    Y = Y,
+    W = Z,
+    W.hat = prop_score,
+    ...
+  )
+  preds <- predict(cf, newdata = x_pop)
+  as.numeric(preds$predictions)
+}
+
+
 estimate_cate <- function(Y, Z, X, learner = "ols", x_pop = NULL){
   # takes data from a size n RCT with uniform assignment and returns an OLS estimate of the science table either for that RCT, or for a size N population with covariates x_pop
   # inputs:
@@ -36,6 +126,10 @@ estimate_cate <- function(Y, Z, X, learner = "ols", x_pop = NULL){
   }
   CATEs
 }
+
+
+
+
 
 estimate_optimal_policy <- function(Y, Z, X, learner = "ols", x_pop = NULL, y_pop = NULL){
   # takes data from a size n RCT with uniform assignment, estimates CATES, and returns an estimate of a "first-best" (unconstrained) policy, either for the study subjects or for a population with covariates x_pop

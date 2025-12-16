@@ -65,15 +65,13 @@ estimate_cate <- function(
   )
 }
 
-
-
 learner_ols <- function(Y, Z, X, x_pop, ...) {
   # function to learn CATE using OLS. 
   # A detailed discussion of this method appears in https://www.tandfonline.com/doi/full/10.1080/01621459.2017.1407322
   
   # check that the rank conditions are satisfied
   p <- ncol(X)
-  if (sum(Z == 0) < p || sum(Z == 1) < p) {
+  if (sum(Z == 0) <= p || sum(Z == 1) <= p) {
     stop("Not enough observations in one treatment arm to fit OLS models.")
   }
   
@@ -302,14 +300,13 @@ estimate_optimal_policy <- function(
 
 
 
-
-
 run_policy_simulation <- function(
     dgp,
     n,
     learner,
-    policy_args = list(),
     num_sims = 100,
+    budget = NULL,
+    costs = NULL,
     seed = NULL
 ) {
   # code to run simulate regret of optimal policy estimation
@@ -317,8 +314,9 @@ run_policy_simulation <- function(
     # dgp = function, the data generating process
     # n = integer, the size of the study
     # learner = function, the base learner for estimating response functions
-    # policy_args = list, optional budget cost constraints containing named arguments for 'budget' and possibly 'costs' 
     # num_sims = integer, the number of simulation iterations
+    # budget = scalar, the budget for a constrained policy 
+    # costs = length-n vector of positive reals, the additive costs for each unit in the DGP
     # seed = integer, an optional seed for the pseudo-random numbers
   # outputs: 
     # a num_sims-by-4 data.frame with a row for each simulation run and columns for estimates and oracle values 
@@ -334,8 +332,9 @@ run_policy_simulation <- function(
       Z = dat$Z,
       X = dat$X,
       learner = learner,
-      y_pop = cbind(dat$y1, dat$y0),
-      !!!policy_args # the 'big-bang' !!! unpacks the list, passing each element to the function as unquoted arguments
+      y_pop = cbind(dat$y_1, dat$y_0),
+      budget = budget,
+      costs = costs
     )
     
     results[[m]] <- data.frame(
@@ -350,23 +349,25 @@ run_policy_simulation <- function(
 }
 
 
-
 dgp_constant_tau <- function(n, tau = 1) {
   # an example of a data generating process with constant treatmnent effect that defaults to 1
   X <- matrix(rnorm(n), n, 1)
-  Z <- rbinom(n, 1, 0.5)
   
-  y0 <- rnorm(n)
-  y1 <- y0 + tau
+  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
   
-  Y <- ifelse(Z == 1, y1, y0)
+  y_0 <- rnorm(n)
+  y_1 <- y_0 + tau
+  
+  Y <- ifelse(Z == 1, y_1, y_0)
   
   list(
     X = X,
     Z = Z,
     Y = Y,
-    y0 = y0,
-    y1 = y1,
+    y_0 = y_0,
+    y_1 = y_1,
     tau = rep(tau, n)
   )
 }
@@ -387,7 +388,9 @@ dgp_linear_heterogeneous <- function(n, p = 3, sigma = 1){
   y_0 <- mu_0 + rnorm(n, sd = sigma)
   y_1 <- y_0 + tau_i
   
-  Z <- rbinom(n, 1, 0.5)
+  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
   Y <- ifelse(Z == 1, y_1, y_0)
   
   list(
@@ -404,19 +407,22 @@ dgp_linear_heterogeneous <- function(n, p = 3, sigma = 1){
 dgp_zero_tau <- function(n) {
   # trivial dgp with no treatment effect whatsoever (Fisher's sharp null is satisfied)
   X <- matrix(rnorm(n), n, 1)
-  Z <- rbinom(n, 1, 0.5)
   
-  y0 <- rnorm(n)
-  y1 <- y0
+  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
+    
+  y_0 <- rnorm(n)
+  y_1 <- y_0
   
-  Y <- y0
+  Y <- y_0
   
   list(
     X = X,
     Z = Z,
     Y = Y,
-    y0 = y0,
-    y1 = y1,
+    y_0 = y_0,
+    y_1 = y_1,
     tau = rep(0, n)
   )
 }

@@ -76,7 +76,7 @@ test_that("budget constraint respected in simulation", {
     n = 100,
     num_sims = 10,
     learner = learner_ols,
-    policy_args = list(budget = K),
+    budget = K,
     seed = 3
   )
   

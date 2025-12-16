@@ -11,8 +11,24 @@ test_that("learner_ols returns correct length", {
   expect_true(is.numeric(cate))
 })
 
-
-
+test_that("learner_ols recovers average treatment effect in simple DGP", {
+  set.seed(42)
+  n <- 300
+  X <- matrix(rnorm(n * 2), n, 2)
+  Z <- rbinom(n, 1, 0.5)
+  
+  tau <- 3
+  Y <- X[,1] + tau * Z + rnorm(n)
+  
+  cate <- learner_ols(
+    Y = Y,
+    Z = Z,
+    X = X,
+    x_pop = X
+  )$cate
+  
+  expect_true(abs(mean(cate) - tau) < 0.75)
+})
 
 
 # Random forest learner
@@ -90,6 +106,39 @@ test_that("learner_rf errors if grf is not installed", {
     learner_rf(1:10, rep(0:1, 5), matrix(rnorm(20), 10, 2), matrix(rnorm(20), 10, 2))
   )
 })
+
+# difference-in-means learner (using the estimate with the largest average treatment effect)
+test_that("learner_dim returns correct length", {
+  n <- 50
+  X <- matrix(rnorm(n * 3), n, 3)
+  Z <- rbinom(n, 1, 0.5)
+  Y <- Z + rnorm(n)
+  
+  cate <- learner_dim(Y, Z, X, X)$cate
+  
+  expect_length(cate, n)
+  expect_true(is.numeric(cate))
+})
+
+test_that("learner_dim recovers average treatment effect in simple DGP", {
+  set.seed(42)
+  n <- 300
+  X <- matrix(rnorm(n * 2), n, 2)
+  Z <- rbinom(n, 1, 0.5)
+  
+  tau <- 3
+  Y <- X[,1] + tau * Z + rnorm(n)
+  
+  cate <- learner_dim(
+    Y = Y,
+    Z = Z,
+    X = X,
+    x_pop = X
+  )$cate
+  
+  expect_true(abs(mean(cate) - tau) < 0.75)
+})
+
 
 
 

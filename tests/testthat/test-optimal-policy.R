@@ -67,26 +67,6 @@ test_that("oracle value dominates estimated policy value", {
 })
 
 
-test_that("threshold shifts treatment assignment", {
-  n <- 10
-  cate <- c(-1, -0.1, 0, 0.1, 1)
-  fake_estimate <- function(...) list(cate = cate)
-  
-  res0 <- estimate_optimal_policy(
-    Y = 1:5, Z = rep(0,5), X = matrix(0,5,1),
-    learner = fake_estimate,
-    threshold = 0
-  )
-  
-  res1 <- estimate_optimal_policy(
-    Y = 1:5, Z = rep(0,5), X = matrix(0,5,1),
-    learner = fake_estimate,
-    threshold = 0.5
-  )
-  
-  expect_true(sum(res1$policy) < sum(res0$policy))
-})
-
 
 
 

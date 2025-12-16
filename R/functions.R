@@ -110,16 +110,7 @@ learner_rf <- function(Y, Z, X, x_pop, ...) {
 
 
 estimate_optimal_policy <- function(Y, Z, X, learner = learner_ols, x_pop = NULL, y_pop = NULL){
-  # takes data from a size n RCT with uniform assignment, estimates CATES, and returns an estimate of a "first-best" (unconstrained) policy, either for the study subjects or for a population with covariates x_pop
-  # the "first-best" policy over an unconstrained portfolio of binary treatments just assigns units with positive CATEs to treatment and negative CATEs to control
-  # inputs:
-    # Y = length-n vector; outcomes in the RCT 
-    # Z = length-n binary vector; treatment assignment generically, 0 denotes control and 1 denotes treatment
-    # X = n-by-p matrix; covariates in RCT
-    # x_pop = N-by-p matrix; covariates in population; may be left out, in which case the science table for the experiment is returned instead
-    # y_pop = N-by-2 matrix; optional true science table for the population as a matrix of potential outcomes on treatment (1st column) and control (2nd column); if ommitted, only the policy estimate is returned without the acutal return
-  # outputs: 
-   # an estimate of the "first-best" (unconstrained) optimal policy and the optimal total return
+ 
   CATEs <- estimate_cate(Y=Y, Z=Z, X=X, learner=learner, x_pop=x_pop)
   op_estimate <- ifelse(CATEs > 0, 1, 0) # optimal policy assigns each unit to treatment if CATE estimate is strictly greater than 0
   if(!is.null(y_pop)){
@@ -133,6 +124,76 @@ estimate_optimal_policy <- function(Y, Z, X, learner = learner_ols, x_pop = NULL
   }
   out
 }
+
+
+estimate_optimal_policy <- function(
+    Y,
+    Z,
+    X,
+    learner = learner_ols,
+    x_pop = NULL,
+    y_pop = NULL,
+    threshold = 0
+) {
+  # takes data from a size n RCT with uniform assignment, estimates CATES, and returns an estimate of a "first-best" (unconstrained) policy, either for the study subjects or for a population with covariates x_pop
+  # the "first-best" policy over an unconstrained portfolio of binary treatments just assigns units with positive CATEs to treatment and negative CATEs to control
+  # inputs:
+    # Y = length-n vector; outcomes in the RCT 
+    # Z = length-n binary vector; treatment assignment generically, 0 denotes control and 1 denotes treatment
+    # X = n-by-p matrix; covariates in RCT
+    # x_pop = N-by-p matrix; covariates in population; may be left out, in which case the science table for the experiment is returned instead
+    # y_pop = N-by-2 matrix; optional true science table for the population as a matrix of potential outcomes on treatment (1st column) and control (2nd column); if ommitted, only the policy estimate is returned without the acutal return
+  # outputs: 
+    # list with elements: 
+      #required 
+        # policy: an estimate of the "first-best" (unconstrained) optimal policy  
+        # cate: the conditional average treatment effect for every unit in the population (if x_pop is provided) or study   
+      #optional (if y_pop, the science table for the population, is provided)
+        # policy_value: the realized value of the estimated optimal policy
+        # oracle_value: the realized value of the true optimal policy
+        # regret: the realized regret of using the estimated optimal policy
+  # Estimate CATEs
+  cate_res <- estimate_cate(
+    Y = Y,
+    Z = Z,
+    X = X,
+    learner = learner,
+    x_pop = x_pop
+  )
+  
+  # allow estimate_cate to return vector or data frame
+  cate <- if (is.data.frame(cate_res)) cate_res$cate else cate_res
+  
+  # Policy: treat if CATE > threshold
+  policy <- as.integer(cate > threshold)
+  
+  out <- list(
+    policy = policy,
+    cate   = cate
+  )
+  
+  # If oracle outcomes provided, evaluate policy
+  if (!is.null(y_pop)) {
+    stopifnot(
+      is.matrix(y_pop),
+      nrow(y_pop) == length(policy),
+      ncol(y_pop) == 2
+    )
+    
+    policy_value <- mean(
+      ifelse(policy == 1, y_pop[,1], y_pop[,2])
+    )
+    
+    oracle_value <- mean(pmax(y_pop[,1], y_pop[,2]))
+    
+    out$policy_value <- policy_value
+    out$oracle_value <- oracle_value
+    out$regret       <- oracle_value - policy_value
+  }
+  
+  out
+}
+
 
 
 

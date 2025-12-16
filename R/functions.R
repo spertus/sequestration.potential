@@ -13,18 +13,18 @@ estimate_cate <- function(
     Z,
     X,
     x_pop = NULL,
-    learner,
+    learner = learner_ols,
     ci_level = 0.95,
     ...
 ) {
   # takes data from a size n RCT with uniform assignment and returns an OLS estimate of the science table either for that RCT, or for a size N population with covariates x_pop
   # inputs:
-  # Y = length-n vector; outcomes in the RCT 
-  # Z = length-n binary vector; treatment assignment generically, 0 denotes control and 1 denotes treatment
-  # X = n-by-p matrix; covariates in RCT
-  # x_pop = N-by-p matrix; covariates in population; may be left out, in which case the science table for the experiment is returned instead. must be in exact same order of covariates as X 
-  # learner = function; 
-  # any additional arguments to the learner function (must be named)
+    # Y = length-n vector; outcomes in the RCT 
+    # Z = length-n binary vector; treatment assignment generically, 0 denotes control and 1 denotes treatment
+    # X = n-by-p matrix; covariates in RCT
+    # x_pop = N-by-p matrix; covariates in population; may be left out, in which case the science table for the experiment is returned instead. must be in exact same order of covariates as X 
+    # learner = function; 
+    # any additional arguments to the learner function (must be named)
   # outputs: 
   # a n-by-2 (default) science table for the experiment or N-by-2 (if x_pop) is given science table for the population
   
@@ -67,8 +67,8 @@ learner_ols <- function(Y, Z, X, x_pop, ...) {
   x_pop_df <- as.data.frame(x_pop)
   dat <- data.frame(Y = Y, Z = Z, X_df)
   
-  mod_ctl <- lm(Y ~ ., data = dat[Z == 0, ])
-  mod_trt <- lm(Y ~ ., data = dat[Z == 1, ])
+  mod_ctl <- lm(Y ~ . - Z, data = dat[Z == 0, ])
+  mod_trt <- lm(Y ~ . - Z, data = dat[Z == 1, ])
   
   mu_0 <- predict(mod_ctl, newdata = x_pop_df, se.fit = TRUE)
   mu_1 <- predict(mod_trt, newdata = x_pop_df, se.fit = TRUE)
@@ -109,9 +109,7 @@ learner_rf <- function(Y, Z, X, x_pop, ...) {
 }
 
 
-
-
-estimate_optimal_policy <- function(Y, Z, X, learner = "ols", x_pop = NULL, y_pop = NULL){
+estimate_optimal_policy <- function(Y, Z, X, learner = learner_ols, x_pop = NULL, y_pop = NULL){
   # takes data from a size n RCT with uniform assignment, estimates CATES, and returns an estimate of a "first-best" (unconstrained) policy, either for the study subjects or for a population with covariates x_pop
   # the "first-best" policy over an unconstrained portfolio of binary treatments just assigns units with positive CATEs to treatment and negative CATEs to control
   # inputs:

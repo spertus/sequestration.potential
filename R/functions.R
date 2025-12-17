@@ -1,5 +1,8 @@
+library(withr)
+library(testthat)
 library(tidyverse)
 library(grf)
+
 
 
 
@@ -27,6 +30,12 @@ estimate_cate <- function(
     # any additional arguments to the learner function (must be named)
   # outputs: 
   # a n-by-2 (default) science table for the experiment or N-by-2 (if x_pop) is given science table for the population
+  
+  # ensure correct dimensions
+  stopifnot(
+    nrow(X) == length(Y),
+    length(Z) == length(Y)
+  )
   
   if (is.null(x_pop)) x_pop <- X
   
@@ -59,25 +68,56 @@ estimate_cate <- function(
   )
 }
 
-
 learner_ols <- function(Y, Z, X, x_pop, ...) {
   # function to learn CATE using OLS. 
   # A detailed discussion of this method appears in https://www.tandfonline.com/doi/full/10.1080/01621459.2017.1407322
-  X_df     <- as.data.frame(X)
-  x_pop_df <- as.data.frame(x_pop)
-  dat <- data.frame(Y = Y, Z = Z, X_df)
   
-  mod_ctl <- lm(Y ~ . - Z, data = dat[Z == 0, ])
-  mod_trt <- lm(Y ~ . - Z, data = dat[Z == 1, ])
+  # check that the rank conditions are satisfied
+  p <- ncol(X)
+  if (sum(Z == 0) <= p || sum(Z == 1) <= p) {
+    stop("Not enough observations in one treatment arm to fit OLS models.")
+  }
   
-  mu_0 <- predict(mod_ctl, newdata = x_pop_df, se.fit = TRUE)
-  mu_1 <- predict(mod_trt, newdata = x_pop_df, se.fit = TRUE)
+  # ensure matrices
+  X <- as.matrix(X)
+  x_pop <- if (is.null(x_pop)) X else as.matrix(x_pop)
+  if(ncol(X) != ncol(x_pop)) stop("Number of covariates (columns) in x_pop does not match number in X")
   
-  cate <- mu_1$fit - mu_0$fit
-  se   <- sqrt(mu_1$se.fit^2 + mu_0$se.fit^2)
+  # add intercept explicitly
+  X_ctl <- cbind(1, X[Z == 0, , drop = FALSE])
+  X_trt <- cbind(1, X[Z == 1, , drop = FALSE])
+  
+  Y_ctl <- Y[Z == 0]
+  Y_trt <- Y[Z == 1]
+  
+  # OLS fits
+  beta_ctl <- solve(t(X_ctl) %*% X_ctl, t(X_ctl) %*% Y_ctl)
+  beta_trt <- solve(t(X_trt) %*% X_trt, t(X_trt) %*% Y_trt)
+  
+  # prediction matrix
+  Xp <- cbind(1, x_pop)
+  
+  mu_0 <- as.vector(Xp %*% beta_ctl)
+  mu_1 <- as.vector(Xp %*% beta_trt)
+  
+  cate <- mu_1 - mu_0
+  
+  # conservative SE from squared residuals (correct under homoskedasticity)
+  sigma2_ctl <- mean((Y_ctl - X_ctl %*% beta_ctl)^2)
+  sigma2_trt <- mean((Y_trt - X_trt %*% beta_trt)^2)
+  
+  V_ctl <- sigma2_ctl * solve(t(X_ctl) %*% X_ctl)
+  V_trt <- sigma2_trt * solve(t(X_trt) %*% X_trt)
+  
+  se <- sqrt(
+    rowSums((Xp %*% V_trt) * Xp) +
+      rowSums((Xp %*% V_ctl) * Xp)
+  )
   
   list(cate = cate, se = se)
 }
+
+
 
 learner_rf <- function(Y, Z, X, x_pop, ...) {
   # function to learn CATE using 'causal forest' as described in https://grf-labs.github.io/grf/reference/causal_forest.html
@@ -86,8 +126,22 @@ learner_rf <- function(Y, Z, X, x_pop, ...) {
   if (!requireNamespace("grf", quietly = TRUE)) {
     stop("Package 'grf' is required to run learner_rf")
   }
+  # check that the rank conditions are satisfied
+  p <- ncol(X)
+  if (sum(Z == 0) < p || sum(Z == 1) < p) {
+    stop("Not enough observations in one treatment arm to fit OLS models.")
+  }
   
-  prop_score <- mean(Z)
+  prop_score <- mean(Z) # propensity scores for RCT, for use with causal_forest
+  # conversion of the two covariate matrices to dataframes with common structure
+  X_df <- as.data.frame(X)
+  colnames(X_df) <- paste0("X", seq_len(ncol(X_df)))
+  if (is.null(x_pop)) {
+    x_pop_df <- X_df
+  } else {
+    x_pop_df <- as.data.frame(x_pop)
+    colnames(x_pop_df) <- colnames(X_df)
+  }
   
   # causal forest is fit using default parameters from the 'grf' package
   cf <- grf::causal_forest(
@@ -108,22 +162,22 @@ learner_rf <- function(Y, Z, X, x_pop, ...) {
 
 learner_dim <- function(Y, Z, X, x_pop, ...) {
   # function that estimates the CATE using the difference-in-means, that is, ignoring the covariates and using the standard ATE estimate
-  X_df     <- as.data.frame(X)
-  x_pop_df <- as.data.frame(x_pop)
-  dat <- data.frame(Y = Y, Z = Z, X_df)
   
-  mod_ctl <- lm(Y ~ . - Z, data = dat[Z == 0, ])
-  mod_trt <- lm(Y ~ . - Z, data = dat[Z == 1, ])
+  # this just records the size of the population or the study
+  if(is.null(x_pop)){
+    N <- nrow(X)
+  } else{
+    N <- nrow(x_pop)
+  }
   
   mu_0 <- mean(Y[Z == 0])
   mu_1 <- mean(Y[Z == 1])
   
-  cate <- rep(mu_1 - mu_0, nrow(x_pop))
-  se   <- rep(sqrt(var(Y[Z == 1]) / sum(Z == 1) + var(Y[Z == 0]) / sum(Z == 0)), nrow(x_pop))
+  cate <- rep(mu_1 - mu_0, N)
+  se   <- rep(sqrt(var(Y[Z == 1]) / sum(Z == 1) + var(Y[Z == 0]) / sum(Z == 0)), N)
   
   list(cate = cate, se = se)
 }
-
 
 
 solve_lp_policy <- function(
@@ -248,42 +302,13 @@ estimate_optimal_policy <- function(
 }
 
 
-dgp_linear_heterogeneous <- function(n, p = 3, sigma = 1){
-  # an example of a data generating process function
-  # input: 
-    # n = the size of the study 
-    # p = the number of covariates, defaults to 3
-    # sigma = the 'noise' in the potential outcomes
-  # output:
-    #  list with covariates, treatments, observed outcomes, potential outcomes, and individual treatment effects
-  X <- matrix(rnorm(n * p), n, p)
-  
-  tau_i <- 1 + X[,1] # heterogeneous treatment effect
-  mu_0  <- X[,2]
-  
-  y_0 <- mu + rnorm(n, sd = sigma)
-  y_1 <- y_0 + tau_i
-  
-  Z <- rbinom(n, 1, 0.5)
-  Y <- ifelse(Z == 1, y_1, y_0)
-  
-  list(
-    X = X,
-    Z = Z,
-    Y = Y,
-    y_0 = y_0,
-    y_1 = y_1,
-    tau = tau_i
-  )
-}
-
-
 run_policy_simulation <- function(
     dgp,
     n,
     learner,
-    policy_args = list(),
     num_sims = 100,
+    budget = NULL,
+    costs = NULL,
     seed = NULL
 ) {
   # code to run simulate regret of optimal policy estimation
@@ -291,8 +316,9 @@ run_policy_simulation <- function(
     # dgp = function, the data generating process
     # n = integer, the size of the study
     # learner = function, the base learner for estimating response functions
-    # policy_args = list, optional budget cost constraints containing named arguments for 'budget' and possibly 'costs' 
     # num_sims = integer, the number of simulation iterations
+    # budget = scalar, the budget for a constrained policy 
+    # costs = length-n vector of positive reals, the additive costs for each unit in the DGP
     # seed = integer, an optional seed for the pseudo-random numbers
   # outputs: 
     # a num_sims-by-4 data.frame with a row for each simulation run and columns for estimates and oracle values 
@@ -301,15 +327,25 @@ run_policy_simulation <- function(
   results <- vector("list", num_sims)
   
   for (m in seq_len(num_sims)) {
-    dat <- dgp(n)
+    # this locks the seed for each DGP, which allows DGPs to be replicated when the seed is set, even if learners use auxiliary randomness that advance the seed
+    if(!is.null(seed)){
+      seed_each <- seed + m
+      withr::with_seed(seed_each, {
+        dat <- dgp(n)
+      })
+    } else{
+      dat <- dgp(n)
+    }
+    
     
     res <- estimate_optimal_policy(
       Y = dat$Y,
       Z = dat$Z,
       X = dat$X,
       learner = learner,
-      y_pop = cbind(dat$y1, dat$y0),
-      !!!policy_args # the 'big-bang' !!! unpacks the list, passing each element to the function as unquoted arguments
+      y_pop = cbind(dat$y_1, dat$y_0),
+      budget = budget,
+      costs = costs
     )
     
     results[[m]] <- data.frame(
@@ -323,290 +359,134 @@ run_policy_simulation <- function(
   do.call(rbind, results)
 }
 
-
-
-
-
-
-
-run_simulation_simple <- function(param_list, num_sims = 200, N = 1e5){
-  # takes a variety of parameters as inputs, generates potential outcomes, runs a completely randomized experiments, and estimates those parameters
-  # inputs:
-    #param_list:
-      # baseline_avg = the average SOC at baseline across plots
-      # baseline_ap_var = the variability of baseline SOC across plots
-      # mean_change_ctl = the average change between baseline and follow-up for control plots
-      # ap_var_change_ctl = the across-plot variance among control plots
-      # ate = average treatment effect
-      # moderator_effect = the effect of a single continuous (gaussian) moderator on treatment effects, which could represent baseline SOC for instance
-      # idiosyncratic_teh = the variability of 'random' treatment effect heterogeneity _not_ due to the moderator
-      # measurement_noise = the amount of measurement noise, representing both assay error and within-plot heterogeneity
-      # n = the size of the experiment (must be divisible by 2)
-    # num_sims:
-      # the number of simulation iterations
-    # N:
-      # the size of the population
-  # returns:
-    # a data.frame of various results summarizing the performance of estimators over the num_sims simulations
-    
-  attach(param_list)
+dgp_zero_tau <- function(n) {
+  # trivial dgp with no treatment effect whatsoever (Fisher's sharp null is satisfied)
+  X <- matrix(rnorm(n), n, 1)
   
-  # simulate at population level
-  b <- rnorm(N, mean = baseline_avg, sd = baseline_ap_var) #baseline %TC
-  teh_noise_i <- rnorm(N, mean = 0, sd = sqrt(idiosyncratic_teh))
-  y_0 <- b + rnorm(N, mean = mean_change_ctl, sd = sqrt(ap_var_change_ctl))
-  y_1 <- y_0 + ate + moderator_effect * stdize(b) + teh_noise_i
-  # parameters to be estimated
-  pate <- mean(y_1) - mean(y_0) # (finite) population average treatment effect
-  fpme <- coef(lm((y_1 - y_0) ~ stdize(b)))['stdize(b)'] #finite-population moderator effect
-  # for now, assume the policy is not budget constrained
-  oracle_mean <- sum(pmax(y_0, y_1))/N #using actual ITEs
-  restricted_oracle_mean <- max(sum(y_1), sum(y_0))/N #total for best restricted regime (treat or don't treat whole population)
+  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
   
-  #storage for results
-  #each result is a matrix with columns ['estimate','lower_ci','upper_ci']
-  diff_means_results <- matrix(0, nrow = num_sims, ncol = 3) #difference-in-means estimate of PATE
-  diff_diffs_results <- matrix(0, nrow = num_sims, ncol = 3) #difference-in-differences estimate of PATE
-  ols_est_results <- matrix(0, nrow = num_sims, ncol = 3) #OLS with full baseline interaction estimate of PATE
-  mod_est_results <- matrix(0, nrow = num_sims, ncol = 3) #OLS estimate of moderator effect
-  naive_mod_est_results <- matrix(0, nrow = num_sims, ncol = 3) #"naive" estimate from regressing followup SOCs on differences
-  optimal_policy_results <- rep(0, num_sims) #OLS estimate of optimal regime by ITE prediction
-  restricted_optimal_policy_results <- rep(0, num_sims)
-  for(i in 1:num_sims){
-    #study level potential outcomes and covariates
-    sample_index <- sample(1:N, size = n, replace = FALSE)
-    #sample from population and add measurement noise from core sampling (currently commented out)
-    baseline_noise <-  rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    B <- b[sample_index] + baseline_noise
-    B_std <- stdize(b)[sample_index] + baseline_noise
-    Y_0 <- y_0[sample_index] + rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    Y_1 <- y_1[sample_index] + rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    #balanced complete randomization
-    trt_index <- sample(1:n, size = n/2, replace = FALSE)
-    
-    #estimate average treatment effect
-    #difference in means
-    diff_means <- mean(Y_1[trt_index]) - mean(Y_0[-trt_index])
-    diff_means_se <- sqrt(var(Y_1[trt_index])/(n/2) + var(Y_0[trt_index])/(n/2)) 
-    diff_means_ci <- c(diff_means - qnorm(0.975) * diff_means_se, diff_means + qnorm(0.975) * diff_means_se)
-    diff_means_results[i,] <- c(diff_means, diff_means_ci)
-    #difference in differences
-    diff_diffs <- mean(Y_1[trt_index] - B[trt_index]) - mean(Y_0[-trt_index] - B[-trt_index])
-    diff_diffs_se <- sqrt(var(Y_1[trt_index] - B[trt_index])/(n/2) + var(Y_0[-trt_index] - B[-trt_index])/(n/2))
-    diff_diffs_ci <- c(diff_diffs - qnorm(0.975) * diff_diffs_se, diff_diffs + qnorm(0.975) * diff_diffs_se)
-    diff_diffs_results[i,] <- c(diff_diffs, diff_diffs_ci)
-    #OLS estimate
-    Z <- rep(0, n) #treatment dummy
-    Z[trt_index] <- 1
-    Y <- Y_0 #pooled observed data
-    Y[trt_index] <- Y_1[trt_index]
-    ols <- lm(Y ~ Z*B_std) #fully interacted OLS, ala Lin (2013) "Agnostic notes..."
-    ols_est <- summary(ols)$coefficients["Z","Estimate"]
-    ols_se <- summary(ols)$coefficients["Z","Std. Error"] #can use usual formula for SE (not sandwich SE) because experiment is balanced; see remark (ii), page 307 of Lin (2013)
-    ols_ci <- c(ols_est - qnorm(0.975) * ols_se, ols_est + qnorm(0.975) * ols_se)
-    ols_est_results[i,] <- c(ols_est, ols_ci)
-    study_data <- data.frame(Y=Y,Z=Z,B_std=B_std,B=B)
-    
-    #estimate moderator effects
-    #using the Ding et al package "hettx" 
-    sys_model <- summary(estimate_systematic(Y ~ Z, interaction.formula = ~ B_std, method = "OLS", data = study_data))
-    # ols_est <- sys_model$ATE
-    # ols_se <- sys_model$SE.ATE
-    # ols_ci <- c(ols_est - qnorm(0.975) * ols_se, ols_est + qnorm(0.975) * ols_se)
-    # ols_est_results[i,] <- c(ols_est, ols_ci)
-    #moderator effects
-    mod_est <- sys_model$coefficients["B_std"]
-    mod_se <- sqrt(sys_model$vcov[2,2])
-    mod_ci <- c(mod_est - qnorm(0.975) * mod_se, mod_est + qnorm(0.975) * mod_se)
-    mod_est_results[i,] <- c(mod_est, mod_ci)
-    #naive estimates of "baseline effects" 
-    D <- Y - B
-    naive_model <- summary(lm(Y ~ D))
-    naive_mod_est <- naive_model$coefficients["D","Estimate"]
-    naive_mod_se <- naive_model$coefficients["D","Std. Error"]
-    naive_mod_ci <- c(naive_mod_est - qnorm(0.975) * naive_mod_se, naive_mod_est + qnorm(0.975) * naive_mod_se)
-    naive_mod_est_results[i,] <- c(naive_mod_est, naive_mod_ci)
-    
-    
-    #estimate optimal policy
-    #predictions of ITEs and estimates of oracle and restricted oracle policies
-    hat_y_1 <- predict(ols, newdata = data.frame(Z = 1, B_std = stdize(b)), interval = "prediction")
-    hat_y_0 <- predict(ols, newdata = data.frame(Z = 0, B_std = stdize(b)), interval = "prediction")
-    est_po_matrix <- cbind(hat_y_1[,1], hat_y_0[,1]) #estimated potential outcome matrix
-    estimated_policy <- apply(est_po_matrix, 1, which.max) #pick out the estimated best treatment for each plot
-    estimated_optimal_mean <- sum(cbind(y_1, y_0)[cbind(1:N,estimated_policy)])/N #return for estimated policy
-    optimal_policy_results[i] <- estimated_optimal_mean 
-    
-    estimated_restricted_optimal_mean <- c(mean(y_0), mean(y_1))[which.max(c(mean(Y_0), mean(Y_1)))] #return for estimated restricted optimal policy
-    restricted_optimal_policy_results[i] <- estimated_restricted_optimal_mean
-  }
-  results <- data.frame(
-    spate = ate, #super-population ATE
-    fpate = pate, #finite-population ATE
-    spme = moderator_effect,
-    fpme = fpme,
-    oracle_mean = oracle_mean,
-    restricted_oracle_mean = restricted_oracle_mean,
-    teh = idiosyncratic_teh, 
-    measurementnoise = measurement_noise,
-    n = n,
-    diffmeans_bias = mean(diff_means_results[,1]) - pate,
-    diffmeans_rmse = sqrt(mean((diff_means_results[,1] - pate)^2)),
-    diffmeans_coverage = mean((diff_means_results[,2]) < pate & (diff_means_results[,3] > pate)),
-    diffmeans_ciwidth = mean(diff_means_results[,3] - diff_means_results[,2]),
-    diffmeans_power = mean(diff_means_results[,2] > 0),
-    diffdiffs_bias = mean(diff_diffs_results[,1]) - pate,
-    diffdiffs_rmse = sqrt(mean((diff_diffs_results[,1] - pate)^2)),
-    diffdiffs_coverage = mean((diff_diffs_results[,2]) < pate & (diff_diffs_results[,3] > pate)),
-    diffdiffs_ciwidth = mean(diff_diffs_results[,3] - diff_diffs_results[,2]),
-    diffdiffs_power = mean(diff_diffs_results[,2] > 0),
-    olsest_bias = mean(ols_est_results[,1]) - pate,
-    olsest_rmse = sqrt(mean((ols_est_results[,1] - pate)^2)),
-    olsest_coverage = mean((ols_est_results[,2]) < pate & (ols_est_results[,3] > pate)),
-    olsest_ciwidth = mean(ols_est_results[,3] - ols_est_results[,2]),
-    olsest_power = mean(ols_est_results[,2] > 0),
-    modest_bias = mean(mod_est_results[,1]) - fpme,
-    modest_rmse = sqrt(mean((mod_est_results[,1] - moderator_effect)^2)),
-    modest_coverage = mean((mod_est_results[,2]) < moderator_effect & (mod_est_results[,3] > moderator_effect)),
-    modest_ciwidth = mean(mod_est_results[,3] - mod_est_results[,2]),
-    naive_modest_bias = mean(naive_mod_est_results[,1]) - fpme,
-    naive_modest_rmse = sqrt(mean((naive_mod_est_results[,1] - moderator_effect)^2)),
-    naive_modest_coverage = mean((naive_mod_est_results[,2]) < moderator_effect & (naive_mod_est_results[,3] > moderator_effect)),
-    naive_modest_ciwidth = mean(naive_mod_est_results[,3] - naive_mod_est_results[,2]),
-    avg_optimal_policy_estimate = mean(optimal_policy_results),
-    avg_restricted_optimal_policy_estimate = mean(restricted_optimal_policy_results)
+  y_0 <- rnorm(n)
+  y_1 <- y_0
+  
+  Y <- y_0
+  
+  list(
+    X = X,
+    Z = Z,
+    Y = Y,
+    y_0 = y_0,
+    y_1 = y_1,
+    tau = rep(0, n)
   )
-  results
 }
 
 
-run_simulation_complex <- function(param_list, num_sims = 200){
-  #generate the potential outcomes one time as a finite population
-  b <- rnorm(N, mean = baseline_avg, sd = baseline_ap_var) # baseline %SOC
-  c <- rbinom(N, size = 1, prob = 0.5) # bernoulli covariate
-  d <- rnorm(N, mean = 0, sd = 1) # continuous covariate
-  teh_noise_i <- rnorm(N, mean = 0, sd = sqrt(idiosyncratic_teh)) # idosyncratic treatment effect heterogneeity 
-  y_0 <- b + rnorm(N, mean = mean_change_ctl, sd = sqrt(ap_var_change_ctl))
-  y_1 <- y_0 + ate + moderator_effect * stdize(b) - c + c*d + teh_noise_i
-  #parameters to be estimated
-  pate <- mean(y_1) - mean(y_0) # (finite) population average treatment effect
-  fpme <- coef(lm((y_1 - y_0) ~ stdize(b)))['stdize(b)'] #finite-population moderator effect
-  #for now, assume the policy is not budget constrained
-  oracle_mean <- sum(pmax(y_0, y_1))/N #using actual ITEs
-  restricted_oracle_mean <- max(sum(y_1), sum(y_0))/N #total for best restricted regime (treat or don't treat whole population)
+dgp_constant_tau <- function(n, tau = 1) {
+  # an example of a data generating process with constant treatmnent effect that defaults to 1
+  X <- matrix(rnorm(n), n, 1)
   
-  #storage for results
-  #each result is a matrix with columns ['estimate','lower_ci','upper_ci']
-  diff_means_results <- matrix(0, nrow = num_sims, ncol = 3) #difference-in-means estimate of PATE
-  diff_diffs_results <- matrix(0, nrow = num_sims, ncol = 3) #difference-in-differences estimate of PATE
-  ols_est_results <- matrix(0, nrow = num_sims, ncol = 3) #OLS with full baseline interaction estimate of PATE
-  mod_est_results <- matrix(0, nrow = num_sims, ncol = 3) #OLS estimate of moderator effect
-  naive_mod_est_results <- matrix(0, nrow = num_sims, ncol = 3) #"naive" estimate from regressing followup SOCs on differences
-  optimal_policy_results <- rep(0, num_sims) #OLS estimate of optimal regime by ITE prediction
-  restricted_optimal_policy_results <- rep(0, num_sims)
-  for(i in 1:num_sims){
-    #study level potential outcomes and covariates
-    sample_index <- sample(1:N, size = n, replace = FALSE)
-    #sample from population and add measurement noise from core sampling (currently commented out)
-    baseline_noise <-  rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    B <- b[sample_index] + baseline_noise
-    B_std <- stdize(b)[sample_index] + baseline_noise
-    Y_0 <- y_0[sample_index] + rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    Y_1 <- y_1[sample_index] + rnorm(n, mean = 0, sd = sqrt(measurement_noise))
-    #balanced complete randomization
-    trt_index <- sample(1:n, size = n/2, replace = FALSE)
-    
-    #estimate average treatment effect
-    #difference in means
-    diff_means <- mean(Y_1[trt_index]) - mean(Y_0[-trt_index])
-    diff_means_se <- sqrt(var(Y_1[trt_index])/(n/2) + var(Y_0[trt_index])/(n/2)) 
-    diff_means_ci <- c(diff_means - qnorm(0.975) * diff_means_se, diff_means + qnorm(0.975) * diff_means_se)
-    diff_means_results[i,] <- c(diff_means, diff_means_ci)
-    #difference in differences
-    diff_diffs <- mean(Y_1[trt_index] - B[trt_index]) - mean(Y_0[-trt_index] - B[-trt_index])
-    diff_diffs_se <- sqrt(var(Y_1[trt_index] - B[trt_index])/(n/2) + var(Y_0[-trt_index] - B[-trt_index])/(n/2))
-    diff_diffs_ci <- c(diff_diffs - qnorm(0.975) * diff_diffs_se, diff_diffs + qnorm(0.975) * diff_diffs_se)
-    diff_diffs_results[i,] <- c(diff_diffs, diff_diffs_ci)
-    #OLS estimate
-    Z <- rep(0, n) #treatment dummy
-    Z[trt_index] <- 1
-    Y <- Y_0 #pooled observed data
-    Y[trt_index] <- Y_1[trt_index]
-    ols <- lm(Y ~ Z*B_std) #fully interacted OLS, ala Lin (2013) "Agnostic notes..."
-    ols_est <- summary(ols)$coefficients["Z","Estimate"]
-    ols_se <- summary(ols)$coefficients["Z","Std. Error"] #can use usual formula for SE (not sandwich SE) because experiment is balanced; see remark (ii), page 307 of Lin (2013)
-    ols_ci <- c(ols_est - qnorm(0.975) * ols_se, ols_est + qnorm(0.975) * ols_se)
-    ols_est_results[i,] <- c(ols_est, ols_ci)
-    study_data <- data.frame(Y=Y,Z=Z,B_std=B_std,B=B)
-    
-    #estimate moderator effects
-    #using the Ding et al package "hettx" 
-    sys_model <- summary(estimate_systematic(Y ~ Z, interaction.formula = ~ B_std, method = "OLS", data = study_data))
-    # ols_est <- sys_model$ATE
-    # ols_se <- sys_model$SE.ATE
-    # ols_ci <- c(ols_est - qnorm(0.975) * ols_se, ols_est + qnorm(0.975) * ols_se)
-    # ols_est_results[i,] <- c(ols_est, ols_ci)
-    #moderator effects
-    mod_est <- sys_model$coefficients["B_std"]
-    mod_se <- sqrt(sys_model$vcov[2,2])
-    mod_ci <- c(mod_est - qnorm(0.975) * mod_se, mod_est + qnorm(0.975) * mod_se)
-    mod_est_results[i,] <- c(mod_est, mod_ci)
-    #naive estimates of "baseline effects" 
-    D <- Y - B
-    naive_model <- summary(lm(Y ~ D))
-    naive_mod_est <- naive_model$coefficients["D","Estimate"]
-    naive_mod_se <- naive_model$coefficients["D","Std. Error"]
-    naive_mod_ci <- c(naive_mod_est - qnorm(0.975) * naive_mod_se, naive_mod_est + qnorm(0.975) * naive_mod_se)
-    naive_mod_est_results[i,] <- c(naive_mod_est, naive_mod_ci)
-    
-    
-    #estimate optimal policy
-    #predictions of ITEs and estimates of oracle and restricted oracle policies
-    hat_y_1 <- predict(ols, newdata = data.frame(Z = 1, B_std = stdize(b)), interval = "prediction")
-    hat_y_0 <- predict(ols, newdata = data.frame(Z = 0, B_std = stdize(b)), interval = "prediction")
-    est_po_matrix <- cbind(hat_y_1[,1], hat_y_0[,1]) #estimated potential outcome matrix
-    estimated_policy <- apply(est_po_matrix, 1, which.max) #pick out the estimated best treatment for each plot
-    estimated_optimal_mean <- sum(cbind(y_1, y_0)[cbind(1:N,estimated_policy)])/N #return for estimated policy
-    optimal_policy_results[i] <- estimated_optimal_mean 
-    
-    estimated_restricted_optimal_mean <- c(mean(y_0), mean(y_1))[which.max(c(mean(Y_0), mean(Y_1)))] #return for estimated restricted optimal policy
-    restricted_optimal_policy_results[i] <- estimated_restricted_optimal_mean
-  }
-  results <- data.frame(
-    spate = ate, #super-population ATE
-    fpate = pate, #finite-population ATE
-    spme = moderator_effect,
-    fpme = fpme,
-    oracle_mean = oracle_mean,
-    restricted_oracle_mean = restricted_oracle_mean,
-    teh = idiosyncratic_teh, 
-    measurementnoise = measurement_noise,
-    n = n,
-    diffmeans_bias = mean(diff_means_results[,1]) - pate,
-    diffmeans_rmse = sqrt(mean((diff_means_results[,1] - pate)^2)),
-    diffmeans_coverage = mean((diff_means_results[,2]) < pate & (diff_means_results[,3] > pate)),
-    diffmeans_ciwidth = mean(diff_means_results[,3] - diff_means_results[,2]),
-    diffmeans_power = mean(diff_means_results[,2] > 0),
-    diffdiffs_bias = mean(diff_diffs_results[,1]) - pate,
-    diffdiffs_rmse = sqrt(mean((diff_diffs_results[,1] - pate)^2)),
-    diffdiffs_coverage = mean((diff_diffs_results[,2]) < pate & (diff_diffs_results[,3] > pate)),
-    diffdiffs_ciwidth = mean(diff_diffs_results[,3] - diff_diffs_results[,2]),
-    diffdiffs_power = mean(diff_diffs_results[,2] > 0),
-    olsest_bias = mean(ols_est_results[,1]) - pate,
-    olsest_rmse = sqrt(mean((ols_est_results[,1] - pate)^2)),
-    olsest_coverage = mean((ols_est_results[,2]) < pate & (ols_est_results[,3] > pate)),
-    olsest_ciwidth = mean(ols_est_results[,3] - ols_est_results[,2]),
-    olsest_power = mean(ols_est_results[,2] > 0),
-    modest_bias = mean(mod_est_results[,1]) - fpme,
-    modest_rmse = sqrt(mean((mod_est_results[,1] - moderator_effect)^2)),
-    modest_coverage = mean((mod_est_results[,2]) < moderator_effect & (mod_est_results[,3] > moderator_effect)),
-    modest_ciwidth = mean(mod_est_results[,3] - mod_est_results[,2]),
-    naive_modest_bias = mean(naive_mod_est_results[,1]) - fpme,
-    naive_modest_rmse = sqrt(mean((naive_mod_est_results[,1] - moderator_effect)^2)),
-    naive_modest_coverage = mean((naive_mod_est_results[,2]) < moderator_effect & (naive_mod_est_results[,3] > moderator_effect)),
-    naive_modest_ciwidth = mean(naive_mod_est_results[,3] - naive_mod_est_results[,2]),
-    avg_optimal_policy_estimate = mean(optimal_policy_results),
-    avg_restricted_optimal_policy_estimate = mean(restricted_optimal_policy_results)
+  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
+  
+  y_0 <- rnorm(n)
+  y_1 <- y_0 + tau
+  
+  Y <- ifelse(Z == 1, y_1, y_0)
+  
+  list(
+    X = X,
+    Z = Z,
+    Y = Y,
+    y_0 = y_0,
+    y_1 = y_1,
+    tau = rep(tau, n)
   )
-  results
 }
+
+dgp_linear_heterogeneous <- function(n, p = 3, sigma = 1){
+  # an example of a data generating process function
+  # input: 
+    # n = the size of the study 
+    # p = the number of covariates, defaults to 3
+    # sigma = the 'noise' in the potential outcomes
+  # output:
+    #  list with covariates, treatments, observed outcomes, potential outcomes, and individual treatment effects
+  X <- matrix(rnorm(n * p), n, p)
+  
+  tau <- 1 + X[,1] # heterogeneous treatment effect
+  mu_0  <- X[,2]
+  
+  y_0 <- mu_0 + rnorm(n, sd = sigma)
+  y_1 <- y_0 + tau
+  
+  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
+  Y <- ifelse(Z == 1, y_1, y_0)
+  
+  list(
+    X = X,
+    Z = Z,
+    Y = Y,
+    y_0 = y_0,
+    y_1 = y_1,
+    tau = tau
+  )
+}
+
+
+
+dgp_nonlinear_interactions <- function(
+    n,
+    p = 5,
+    sigma = 1,
+    interaction_scale = 1,
+    nonlinear_scale = 1
+) {
+  # a complex data generating process with non-linear covariate effects and interactions between covariates 
+  stopifnot(p >= 3)
+  
+  # Covariates
+  X <- matrix(rnorm(n * p), n, p)
+  
+  # Nonlinear baseline
+  mu_0 <- nonlinear_scale * (
+    sin(X[,1]) +
+      0.5 * X[,2]^2 -
+      0.3 * exp(-X[,3])
+  )
+  
+  # CATE with nonlinearity and interactions
+  tau <- interaction_scale * (
+    1 +
+      X[,1] * X[,2] -
+      0.5 * X[,3]^2 +
+      0.3 * X[,4] * X[,5]
+  )
+  
+  # Potential outcomes
+  y_0 <- mu_0 + rnorm(n, sd = sigma)
+  y_1 <- y_0 + tau
+  
+  # Randomized treatment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
+  
+  Y <- ifelse(Z == 1, y_1, y_0)
+  
+  list(
+    X = X,
+    Z = Z,
+    Y = Y,
+    y_0 = y_0,
+    y_1 = y_1,
+    tau = tau,
+    mu_0 = mu_0
+  )
+}
+
+
+

@@ -50,16 +50,16 @@ test_that("oracle value dominates estimated policy value", {
   Z <- rbinom(n, 1, 0.5)
   
   tau <- rnorm(n) # ATE is 0
-  y0 <- rnorm(n)
-  y1 <- y0 + tau
-  Y  <- ifelse(Z == 1, y1, y0)
+  y_0 <- rnorm(n)
+  y_1 <- y_0 + tau
+  Y  <- ifelse(Z == 1, y_1, y_0)
   
   res <- estimate_optimal_policy(
     Y = Y,
     Z = Z,
     X = X,
     learner = learner_ols,
-    y_pop = cbind(y1, y0)
+    y_pop = cbind(y_1, y_0)
   )
   
   expect_true(res$oracle_value >= res$policy_value)

@@ -1,5 +1,8 @@
+library(withr)
+library(testthat)
 library(tidyverse)
 library(grf)
+
 
 
 
@@ -299,7 +302,6 @@ estimate_optimal_policy <- function(
 }
 
 
-
 run_policy_simulation <- function(
     dgp,
     n,
@@ -325,7 +327,16 @@ run_policy_simulation <- function(
   results <- vector("list", num_sims)
   
   for (m in seq_len(num_sims)) {
-    dat <- dgp(n)
+    # this locks the seed for each DGP, which allows DGPs to be replicated when the seed is set, even if learners use auxiliary randomness that advance the seed
+    if(!is.null(seed)){
+      seed_each <- seed + m
+      withr::with_seed(seed_each, {
+        dat <- dgp(n)
+      })
+    } else{
+      dat <- dgp(n)
+    }
+    
     
     res <- estimate_optimal_policy(
       Y = dat$Y,
@@ -346,6 +357,29 @@ run_policy_simulation <- function(
   }
   
   do.call(rbind, results)
+}
+
+dgp_zero_tau <- function(n) {
+  # trivial dgp with no treatment effect whatsoever (Fisher's sharp null is satisfied)
+  X <- matrix(rnorm(n), n, 1)
+  
+  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
+  
+  y_0 <- rnorm(n)
+  y_1 <- y_0
+  
+  Y <- y_0
+  
+  list(
+    X = X,
+    Z = Z,
+    Y = Y,
+    y_0 = y_0,
+    y_1 = y_1,
+    tau = rep(0, n)
+  )
 }
 
 
@@ -382,11 +416,11 @@ dgp_linear_heterogeneous <- function(n, p = 3, sigma = 1){
     #  list with covariates, treatments, observed outcomes, potential outcomes, and individual treatment effects
   X <- matrix(rnorm(n * p), n, p)
   
-  tau_i <- 1 + X[,1] # heterogeneous treatment effect
+  tau <- 1 + X[,1] # heterogeneous treatment effect
   mu_0  <- X[,2]
   
   y_0 <- mu_0 + rnorm(n, sd = sigma)
-  y_1 <- y_0 + tau_i
+  y_1 <- y_0 + tau
   
   #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
   Z <- rep(0, n)
@@ -399,23 +433,49 @@ dgp_linear_heterogeneous <- function(n, p = 3, sigma = 1){
     Y = Y,
     y_0 = y_0,
     y_1 = y_1,
-    tau = tau_i
+    tau = tau
   )
 }
 
 
-dgp_zero_tau <- function(n) {
-  # trivial dgp with no treatment effect whatsoever (Fisher's sharp null is satisfied)
-  X <- matrix(rnorm(n), n, 1)
+
+dgp_nonlinear_interactions <- function(
+    n,
+    p = 5,
+    sigma = 1,
+    interaction_scale = 1,
+    nonlinear_scale = 1
+) {
+  # a complex data generating process with non-linear covariate effects and interactions between covariates 
+  stopifnot(p >= 3)
   
-  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  # Covariates
+  X <- matrix(rnorm(n * p), n, p)
+  
+  # Nonlinear baseline
+  mu_0 <- nonlinear_scale * (
+    sin(X[,1]) +
+      0.5 * X[,2]^2 -
+      0.3 * exp(-X[,3])
+  )
+  
+  # CATE with nonlinearity and interactions
+  tau <- interaction_scale * (
+    1 +
+      X[,1] * X[,2] -
+      0.5 * X[,3]^2 +
+      0.3 * X[,4] * X[,5]
+  )
+  
+  # Potential outcomes
+  y_0 <- mu_0 + rnorm(n, sd = sigma)
+  y_1 <- y_0 + tau
+  
+  # Randomized treatment
   Z <- rep(0, n)
   Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
-    
-  y_0 <- rnorm(n)
-  y_1 <- y_0
   
-  Y <- y_0
+  Y <- ifelse(Z == 1, y_1, y_0)
   
   list(
     X = X,
@@ -423,8 +483,10 @@ dgp_zero_tau <- function(n) {
     Y = Y,
     y_0 = y_0,
     y_1 = y_1,
-    tau = rep(0, n)
+    tau = tau,
+    mu_0 = mu_0
   )
 }
+
 
 

@@ -127,6 +127,11 @@ learner_rf <- function(Y, Z, X, x_pop, ...) {
     stop("Package 'grf' is required to run learner_rf")
   }
   # check that the rank conditions are satisfied
+  # ensure matrices
+  X <- as.matrix(X)
+  x_pop <- if (is.null(x_pop)) X else as.matrix(x_pop)
+  if(ncol(X) != ncol(x_pop)) stop("Number of covariates (columns) in x_pop does not match number in X")
+  
   p <- ncol(X)
   if (sum(Z == 0) < p || sum(Z == 1) < p) {
     stop("Not enough observations in one treatment arm to fit OLS models.")
@@ -229,6 +234,7 @@ solve_lp_policy <- function(
   as.integer(res$solution > 0.5)
 }
 
+
 estimate_optimal_policy <- function(
     Y,
     Z,
@@ -301,6 +307,7 @@ estimate_optimal_policy <- function(
   out
 }
 
+########### generic simulation functions ###########
 
 run_policy_simulation <- function(
     dgp,
@@ -406,6 +413,40 @@ dgp_constant_tau <- function(n, tau = 1) {
   )
 }
 
+
+
+dgp_saturation <- function(n, saturation_effect = 1){
+  # data generating process function under the saturation hypothesis
+  # input: 
+    # n = the size of the study 
+  # output:
+    #  list with covariates, treatments, observed outcomes, potential outcomes, and individual treatment effects
+  
+  X <- matrix(rnorm(n * 2), n, 2) # proxy for baseline SOC
+  
+  tau <- 1 - saturation_effect * X[,1] # heterogeneous treatment effect
+  mu_0  <- X[,2]
+  
+  y_0 <- mu_0 + rnorm(n, sd = sigma)
+  y_1 <- y_0 + tau
+  
+  #Z <- rbinom(n, 1, 0.5) # bernoulli experiment
+  Z <- rep(0, n)
+  Z[sample(1:n, ceiling(n/2))] <- 1 # completely randomized experiment
+  Y <- ifelse(Z == 1, y_1, y_0)
+  
+  list(
+    X = X,
+    Z = Z,
+    Y = Y,
+    y_0 = y_0,
+    y_1 = y_1,
+    tau = tau
+  )
+}
+
+
+
 dgp_linear_heterogeneous <- function(n, p = 3, sigma = 1){
   # an example of a data generating process function
   # input: 
@@ -436,7 +477,6 @@ dgp_linear_heterogeneous <- function(n, p = 3, sigma = 1){
     tau = tau
   )
 }
-
 
 
 dgp_nonlinear_interactions <- function(
@@ -487,6 +527,8 @@ dgp_nonlinear_interactions <- function(
     mu_0 = mu_0
   )
 }
+
+
 
 
 

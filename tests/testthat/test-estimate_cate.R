@@ -52,6 +52,22 @@ test_that("estimate_cate works with RF learner", {
   expect_true(abs(mean(cate) - 2) < 0.5)
 })
 
+test_that("estimate_cate works when vector is passed for X", {
+  set.seed(123)
+  n <- 100
+  X <-rnorm(n)
+  Z <- rbinom(n, 1, 0.5)
+  Y <- 1 + 2 * Z + X + rnorm(n)
+  
+  cate <- estimate_cate(
+    Y, Z, X,
+    learner = learner_rf
+  )$cate
+  
+  expect_type(cate, "double")
+  expect_length(cate, n)
+  expect_true(abs(mean(cate) - 2) < 0.5)
+})
 
 
 test_that("estimate_cate returns CIs with RF learner", {

@@ -245,8 +245,7 @@ estimate_optimal_policy <- function(
     budget = NULL,
     costs = NULL
 ) {
-  # takes data from a size n RCT with uniform assignment, estimates CATES, and returns an estimate of a "first-best" (unconstrained) policy, either for the study subjects or for a population with covariates x_pop
-  # the "first-best" policy over an unconstrained portfolio of binary treatments just assigns units with positive CATEs to treatment and negative CATEs to control
+  # takes data from a size n RCT with uniform assignment, estimates CATES, and returns an estimate of the optimal policy and return
   # inputs:
     # Y = length-n vector; outcomes in the RCT 
     # Z = length-n binary vector; treatment assignment generically, 0 denotes control and 1 denotes treatment

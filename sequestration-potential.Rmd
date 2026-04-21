@@ -204,7 +204,6 @@ c(ATE_dim, SE_dim)
 ### Core-level results
 
 
-
 ```{r estimate effect of optimal policy if cate estimates are taken as groundtruth}
 baseline_soc_grid <- seq(from = min(nrcs_data$TC_2016), to = max(nrcs_data$TC_2016), length.out = 100)
 baseline_mean <- mean(nrcs_data$TC_2016)
@@ -243,6 +242,7 @@ print(c(
 
 ```{r plot cate estimates from nrcs}
 # naive estimate from regressing differences on baseline
+# nrcs_data <- nrcs_data %>% filter(TC_2016 < 8) # run this line to filter out the outlier
 naive_estimates <- fitted(lm((TC_2019-TC_2016) ~ TC_2016, data = nrcs_data)) 
 nrcs_naive_estimates <- data.frame(Y = naive_estimates, X = nrcs_data$TC_2016)
 
@@ -256,30 +256,37 @@ cate_estimates_grid <- estimate_cate(
 nrcs_cates_grid <- data.frame(X = baseline_soc_grid, Y = cate_estimates_grid$cate)
 
 nrcs_cate_figure <- ggplot(nrcs_data, aes(x = TC_2016, y = TC_2019 - TC_2016)) +
-  geom_point(aes(color = treatment_long), size = 1.5) +
-  scale_color_manual(
+  geom_point(aes(shape = treatment_long), size = 1.5) +
+  scale_shape_manual(
     name = "Treatment",
     values = c(
-      "Control" = "steelblue",
-      "Compost" = "darkorange3"
+      "Control" = 16,   # filled circle
+      "Compost" = 17    # filled triangle
     )
   ) +
   new_scale_color() +
   geom_line(
     data = nrcs_cates_grid,
-    aes(x = X, y = Y, color = "CATE"),
+    aes(x = X, y = Y, color = "Causal (CATE)", linetype = "Causal (CATE)"),
     size = 1.2
   ) +
   geom_line(
     data = nrcs_naive_estimates,
-    aes(x = X, y = Y, color = "Naïve"),
+    aes(x = X, y = Y, color = "Simple regression", linetype = "Simple regression"),
     size = 1.2
   ) +
   scale_color_manual(
-    name = "Saturation estimate",
+    name = "Moderation estimate",
     values = c(
-      "CATE" = "forestgreen",
-      "Naïve" = "firebrick"
+      "Causal (CATE)" = "steelblue",
+      "Simple regression" = "darkorange3"
+    )
+  ) +
+  scale_linetype_manual(
+    name = "Moderation estimate",
+    values = c(
+      "Causal (CATE)"  = "solid",
+      "Simple regression" = "dashed"
     )
   ) +
   theme_bw() +
@@ -294,6 +301,83 @@ nrcs_cate_figure <- ggplot(nrcs_data, aes(x = TC_2016, y = TC_2019 - TC_2016)) +
   )
 
 nrcs_cate_figure
+```
+
+
+## Intuition for how CATE is estimated
+
+```{r cate intuition}
+# Fit separate regressions for control and treatment groups
+lm_control <- lm(TC_2019 ~ TC_2016, data = nrcs_data[nrcs_data$treatment == 0, ])
+lm_treat   <- lm(TC_2019 ~ TC_2016, data = nrcs_data[nrcs_data$treatment == 1, ])
+
+# Predict over the same baseline grid
+intuition_grid <- data.frame(TC_2016 = baseline_soc_grid)
+intuition_grid$control_pred <- predict(lm_control, newdata = intuition_grid)
+intuition_grid$treat_pred   <- predict(lm_treat,   newdata = intuition_grid)
+intuition_grid$cate_pred    <- intuition_grid$treat_pred - intuition_grid$control_pred
+
+# Reshape to long for ggplot
+intuition_long <- intuition_grid %>%
+  pivot_longer(
+    cols = c(control_pred, treat_pred, cate_pred),
+    names_to  = "line",
+    values_to = "y"
+  ) %>%
+  mutate(line = recode(line,
+    "control_pred" = "Control regression",
+    "treat_pred"   = "Treatment regression",
+    "cate_pred"    = "CATE estimate"
+  ))
+
+cate_intuition_figure <- ggplot() +
+  geom_point(
+    data = nrcs_data,
+    aes(x = TC_2016, y = TC_2019, shape = treatment_long, color = treatment_long),
+    size = 1.5, alpha = 0.6
+  ) +
+  scale_shape_manual(
+    name   = "Treatment",
+    values = c("Control" = 16, "Compost" = 17)
+  ) +
+  scale_color_manual(
+    name   = "Treatment",
+    values = c("Control" = "darkorange3", "Compost" = "steelblue")
+  ) +
+  new_scale_color() +
+  geom_line(
+    data = intuition_long,
+    aes(x = TC_2016, y = y, color = line, linetype = line),
+    size = 1.2
+  ) +
+  scale_color_manual(
+    name   = "Estimate",
+    values = c(
+      "Control regression"    = "darkorange3",
+      "Treatment regression"  = "steelblue",
+      "CATE estimate"     = "forestgreen"
+    )
+  ) +
+  scale_linetype_manual(
+    name   = "Estimate",
+    values = c(
+      "Control regression"    = "dashed",
+      "Treatment regression"  = "dashed",
+      "CATE estimate"     = "solid"
+    )
+  ) +
+  theme_bw() +
+  theme(
+    text         = element_text(size = 18),
+    legend.text  = element_text(size = 14),
+    legend.key.width = unit(1, "cm")
+  ) +
+  labs(
+    x = "Baseline %C ",
+    y = "Follow-up %C or estimated treatment effect (%C)"
+  )
+
+cate_intuition_figure
 ```
 
 ### Plot-level Results
@@ -362,31 +446,38 @@ cate_estimates_grid <- estimate_cate(
   x_pop=as.matrix(nrcs_plot_data$TC_2016))
 nrcs_cates_grid <- data.frame(X = nrcs_plot_data$TC_2016, Y = cate_estimates_grid$cate)
 
-nrcs_cate_figure <- ggplot(nrcs_plot_data, aes(x = TC_2016, y = TC_2019 - TC_2016)) +
-  geom_point(aes(color = treatment_long), size = 1.5) +
-  scale_color_manual(
+nrcs_cate_figure <-  ggplot(nrcs_plot_data, aes(x = TC_2016, y = TC_2019 - TC_2016)) +
+  geom_point(aes(shape = treatment_long), size = 1.5) +
+  scale_shape_manual(
     name = "Treatment",
     values = c(
-      "Control" = "steelblue",
-      "Compost" = "darkorange3"
+      "Control" = 16,   # filled circle
+      "Compost" = 17    # filled triangle
     )
   ) +
   new_scale_color() +
   geom_line(
     data = nrcs_cates_grid,
-    aes(x = X, y = Y, color = "CATE"),
+    aes(x = X, y = Y, color = "Causal (CATE)", linetype = "Causal (CATE)"),
     size = 1.2
   ) +
   geom_line(
     data = nrcs_naive_estimates,
-    aes(x = X, y = Y, color = "Naïve"),
+    aes(x = X, y = Y, color = "Simple regression", linetype = "Simple regression"),
     size = 1.2
   ) +
   scale_color_manual(
-    name = "Saturation estimate",
+    name = "Moderation estimate",
     values = c(
-      "CATE" = "forestgreen",
-      "Naïve" = "firebrick"
+      "Causal (CATE)" = "steelblue",
+      "Simple regression" = "darkorange3"
+    )
+  ) +
+  scale_linetype_manual(
+    name = "Moderation estimate",
+    values = c(
+      "Causal (CATE)"  = "solid",
+      "Simple regression" = "dashed"
     )
   ) +
   theme_bw() +
@@ -575,10 +666,10 @@ plot_df <- sim_df %>%
     scenario_long = factor(case_match(
       scenario, 
       "none" ~ "No moderation", 
-      "sat_small" ~ "Weak saturation", 
-      "sat_large" ~ "Strong saturation",
+      "sat_small" ~ "Weak BL moderation", 
+      "sat_large" ~ "Strong BL moderation",
       "complex" ~ "Complex moderation"
-    ), levels = c("No moderation", "Weak saturation", "Strong saturation", "Complex moderation")),
+    ), levels = c("No moderation", "Weak BL moderation", "Strong BL moderation", "Complex moderation")),
     ATE = factor(paste("ATE: ", tau, "%", sep=""), levels = c("ATE: 0%", "ATE: 0.5%", "ATE: 1%", "ATE: 2%"))
   )
 ```
@@ -611,6 +702,7 @@ p_regret <- ggplot(regret_summary, aes(x = N, y = mean_regret, group = policy, l
   theme_bw() +
   theme(
     text = element_text(size = 16), 
+    strip.text = element_text(size = 12),
     legend.text = element_text(size = 14),
     legend.key.width = unit(1, "cm")
   )

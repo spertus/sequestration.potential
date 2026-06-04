@@ -208,54 +208,160 @@ c(ATE_dim, SE_dim)
 baseline_soc_grid <- seq(from = min(nrcs_data$TC_2016), to = max(nrcs_data$TC_2016), length.out = 100)
 baseline_mean <- mean(nrcs_data$TC_2016)
 
-# estimates for the study points
+# CATE point estimates at the study points (still used elsewhere in the doc)
 cates_nrcs_study <- estimate_cate(
-  Y=nrcs_data$TC_2019, 
-  Z=nrcs_data$treatment, 
+  Y=nrcs_data$TC_2019,
+  Z=nrcs_data$treatment,
   X=as.matrix(nrcs_data$TC_2016),
   learner = learner_ols
 )
 
-#outcome on blanket policy
-blanket_optimum <- abs(ATE_dim)
-rel_blanket_optimum <- 100 * blanket_optimum / baseline_mean
+# Estimate the unconstrained-optimal and treat-10% policies, with 1000-rep
+# stratified bootstrap CIs for: the value of each blanket policy (treat-all /
+# treat-none / best blanket) and the value of the optimal policy. Each rep
+# resamples within each treatment arm, refits the OLS interaction regression,
+# re-solves the LP, and recomputes mean(policy * mu_1 + (1 - policy) * mu_0).
+n_top_10_percent <- ceiling(nrow(nrcs_data) * 0.1)
 
-# outcome on unconstrained optimal policy
-unconstrained_optimum <- mean(abs(cates_nrcs_study$cate))
-rel_unconstrained_optimum <- 100 * unconstrained_optimum / baseline_mean
-# treatment fraction for optimal policy
-trt_frac <- mean(cates_nrcs_study$cate > 0)
+policy_unconstrained <- estimate_optimal_policy(
+  Y = nrcs_data$TC_2019,
+  Z = nrcs_data$treatment,
+  X = as.matrix(nrcs_data$TC_2016),
+  learner   = learner_ols,
+  inference = "bootstrap",
+  n_boot    = 1000,
+  boot_seed = 42,
+  ci_level = 0.9
+)
 
-# outcome on treat 10% optimal policy 
-n_top_10_percent <- ceiling(length(cates_nrcs_study$cate) * 0.1)
-top_indices <- order(cates_nrcs_study$cate, decreasing = TRUE)[1:n_top_10_percent]
-constrained_optimum <- mean(c(cates_nrcs_study$cate[top_indices], -cates_nrcs_study$cate[-top_indices]))
-rel_constrained_optimum <- 100 * constrained_optimum / baseline_mean
+policy_top10 <- estimate_optimal_policy(
+  Y = nrcs_data$TC_2019,
+  Z = nrcs_data$treatment,
+  X = as.matrix(nrcs_data$TC_2016),
+  learner   = learner_ols,
+  budget    = n_top_10_percent,
+  inference = "bootstrap",
+  n_boot    = 1000,
+  boot_seed = 42,
+  ci_level = 0.9
+)
 
-print(c(
-  paste("blanket optimum: ", blanket_optimum, " (", rel_blanket_optimum,"%)", sep = ""),
-  paste("unconstrained OLS optimum: ", unconstrained_optimum, " (", rel_unconstrained_optimum,"%)", sep = ""),
-  paste("constrained OLS optimum: ", constrained_optimum, " (", rel_constrained_optimum,"%)", sep = "")
-))
+# Tidy summary: each row is one strategy, with its predicted average potential
+# outcome (i.e., expected %SOC at follow-up under that policy) and a 95% CI.
+fmt_val <- function(est, ci) {
+  sprintf("%5.3f %%SOC  (95%% CI: %5.3f, %5.3f)  =  %4.1f%% of baseline mean (CI: %4.1f%%, %4.1f%%)",
+          est, ci[1], ci[2],
+          100 * est / baseline_mean,
+          100 * ci[1] / baseline_mean,
+          100 * ci[2] / baseline_mean)
+}
+
+policy_value_summary <- tibble(
+  Strategy = c(
+    "Treat all (compost everywhere)",
+    "Treat none (status quo)",
+    "Best blanket policy",
+    "Unconstrained optimal (treat where CATE > 0)",
+    "Treat at most 10% of plots (top-K by CATE)"
+  ),
+  Estimate = c(
+    policy_unconstrained$treat_all_value,
+    policy_unconstrained$treat_none_value,
+    policy_unconstrained$best_blanket_value,
+    policy_unconstrained$predicted_value,
+    policy_top10$predicted_value
+  ),
+  CI_lower = c(
+    policy_unconstrained$inference$treat_all_value_ci[1],
+    policy_unconstrained$inference$treat_none_value_ci[1],
+    policy_unconstrained$inference$best_blanket_value_ci[1],
+    policy_unconstrained$inference$predicted_value_ci[1],
+    policy_top10$inference$predicted_value_ci[1]
+  ),
+  CI_upper = c(
+    policy_unconstrained$inference$treat_all_value_ci[2],
+    policy_unconstrained$inference$treat_none_value_ci[2],
+    policy_unconstrained$inference$best_blanket_value_ci[2],
+    policy_unconstrained$inference$predicted_value_ci[2],
+    policy_top10$inference$predicted_value_ci[2]
+  )
+)
+
+knitr::kable(
+policy_value_summary %>%
+  mutate(
+    pct_of_baseline = sprintf("%.1f%%", 100 * Estimate / baseline_mean),
+    pretty = sprintf(
+      "%5.3f %%SOC (95%% CI: %5.3f, %5.3f)",
+      Estimate, CI_lower, CI_upper
+    )
+  ) %>%
+  select(Strategy, Value = pretty, `% of baseline` = pct_of_baseline) %>%
+  print(n = 5)
+)
+
+# Treatment fraction under the unconstrained optimal policy (point estimate)
+trt_frac <- mean(policy_unconstrained$policy)
+
+# Treatment-stability scores: fraction of bootstrap reps in which each plot is
+# treated under the unconstrained optimal policy. Useful for identifying plots
+# that are robustly in (or out of) the optimal portfolio.
+nrcs_data$trt_stability_unconstrained <- policy_unconstrained$inference$treatment_stability
+nrcs_data$trt_stability_top10         <- policy_top10$inference$treatment_stability
 ```
 
 
 ```{r plot cate estimates from nrcs}
-# naive estimate from regressing differences on baseline
 # nrcs_data <- nrcs_data %>% filter(TC_2016 < 8) # run this line to filter out the outlier
-naive_estimates <- fitted(lm((TC_2019-TC_2016) ~ TC_2016, data = nrcs_data)) 
-nrcs_naive_estimates <- data.frame(Y = naive_estimates, X = nrcs_data$TC_2016)
 
-# estimate cate using ols
+# naive (simple regression) estimate of CATE: regress change on baseline %C.
+# Evaluated on the baseline grid so we can plot a 95% confidence ribbon for
+# the conditional mean E[change | baseline].
+naive_fit <- lm((TC_2019 - TC_2016) ~ TC_2016, data = nrcs_data)
+naive_pred <- predict(
+  naive_fit,
+  newdata = data.frame(TC_2016 = baseline_soc_grid),
+  interval = "confidence",
+  level = 0.9
+)
+nrcs_naive_estimates <- data.frame(
+  X = baseline_soc_grid,
+  Y = naive_pred[, "fit"],
+  lower = naive_pred[, "lwr"],
+  upper = naive_pred[, "upr"]
+)
+
+# estimate cate using ols (returns HC2-based 95% CIs in `lower`/`upper`)
 cate_estimates_grid <- estimate_cate(
-  Y=nrcs_data$TC_2019, 
-  Z=nrcs_data$treatment, 
+  Y=nrcs_data$TC_2019,
+  Z=nrcs_data$treatment,
   X=as.matrix(nrcs_data$TC_2016),
   learner = learner_ols,
-  x_pop=as.matrix(baseline_soc_grid))
-nrcs_cates_grid <- data.frame(X = baseline_soc_grid, Y = cate_estimates_grid$cate)
+  x_pop=as.matrix(baseline_soc_grid),
+  ci_level = 0.9
+)
+nrcs_cates_grid <- data.frame(
+  X = baseline_soc_grid,
+  Y = cate_estimates_grid$cate,
+  lower = cate_estimates_grid$lower,
+  upper = cate_estimates_grid$upper
+)
 
 nrcs_cate_figure <- ggplot(nrcs_data, aes(x = TC_2016, y = TC_2019 - TC_2016)) +
+  # 95% CI ribbon for the CATE (HC2 SEs from learner_ols)
+  geom_ribbon(
+    data = nrcs_cates_grid,
+    aes(x = X, ymin = lower, ymax = upper, fill = "Causal (CATE)"),
+    inherit.aes = FALSE,
+    alpha = 0.2
+  ) +
+  # 95% CI ribbon for the simple regression of change on baseline
+  geom_ribbon(
+    data = nrcs_naive_estimates,
+    aes(x = X, ymin = lower, ymax = upper, fill = "Simple regression"),
+    inherit.aes = FALSE,
+    alpha = 0.2
+  ) +
   geom_point(aes(shape = treatment_long), size = 1.5) +
   scale_shape_manual(
     name = "Treatment",
@@ -287,6 +393,13 @@ nrcs_cate_figure <- ggplot(nrcs_data, aes(x = TC_2016, y = TC_2019 - TC_2016)) +
     values = c(
       "Causal (CATE)"  = "solid",
       "Simple regression" = "dashed"
+    )
+  ) +
+  scale_fill_manual(
+    name = "Moderation estimate",
+    values = c(
+      "Causal (CATE)" = "steelblue",
+      "Simple regression" = "darkorange3"
     )
   ) +
   theme_bw() +
@@ -398,55 +511,146 @@ cates_nrcs_study_plots <- estimate_cate(
   Y=nrcs_plot_data$TC_2019, 
   Z=nrcs_plot_data$treatment, 
   X=as.matrix(nrcs_plot_data$TC_2016),
-  learner = learner_ols
+  learner = learner_ols,
+  ci_level = 0.9
 )
 ```
 
 Plot-level optimal policy returns
 
 ```{r}
-# average treatment effect estimates (plot-level)
-ATE_dim <- abs(
-  mean(nrcs_plot_data$TC_2019[nrcs_plot_data$treatment == 1]) - 
-  mean(nrcs_plot_data$TC_2019[nrcs_plot_data$treatment == 0])
+# Plot-level analog of the core-level chunk above: report the value of each
+# strategy as the average potential outcome (predicted %SOC at follow-up under
+# that strategy), with 1000-rep stratified bootstrap CIs.
+plot_n_top_10_percent <- max(1, ceiling(nrow(nrcs_plot_data) * 0.1))
+
+policy_unconstrained_plots <- estimate_optimal_policy(
+  Y = nrcs_plot_data$TC_2019,
+  Z = nrcs_plot_data$treatment,
+  X = as.matrix(nrcs_plot_data$TC_2016),
+  learner   = learner_ols,
+  inference = "bootstrap",
+  n_boot    = 1000,
+  boot_seed = 42
 )
-blanket_optimum <- abs(ATE_dim)
 
-# outcome on unconstrained optimal policy
-unconstrained_optimum <- mean(abs(cates_nrcs_study_plots$cate))
-rel_unconstrained_optimum <- 100 * unconstrained_optimum / baseline_mean
-# treatment fraction for optimal policy
-trt_frac <- mean(cates_nrcs_study_plots$cate > 0)
+policy_top10_plots <- estimate_optimal_policy(
+  Y = nrcs_plot_data$TC_2019,
+  Z = nrcs_plot_data$treatment,
+  X = as.matrix(nrcs_plot_data$TC_2016),
+  learner   = learner_ols,
+  budget    = plot_n_top_10_percent,
+  inference = "bootstrap",
+  n_boot    = 1000,
+  boot_seed = 42
+)
 
-# outcome on treat 10% optimal policy 
-n_top_10_percent <- ceiling(length(cates_nrcs_study_plots$cate) * 0.1)
-top_indices <- order(cates_nrcs_study_plots$cate, decreasing = TRUE)[1:n_top_10_percent]
-constrained_optimum <- mean(c(cates_nrcs_study_plots$cate[top_indices], -cates_nrcs_study_plots$cate[-top_indices]))
-rel_constrained_optimum <- 100 * constrained_optimum / baseline_mean
-print(c(
-  paste("blanket optimum (plots): ", round(blanket_optimum, 3), " (", round(rel_blanket_optimum, 1),"%)", sep = ""),
-  paste("unconstrained OLS optimum (plots): ", round(unconstrained_optimum, 3), " (", round(rel_unconstrained_optimum, 1),"%)", sep = ""),
-  paste("constrained OLS optimum (plots): ", round(constrained_optimum, 3), " (", round(rel_constrained_optimum,1),"%)", sep = "")
-))
+policy_value_summary_plots <- tibble(
+  Strategy = c(
+    "Treat all (compost everywhere)",
+    "Treat none (status quo)",
+    "Best blanket policy",
+    "Unconstrained optimal (treat where CATE > 0)",
+    sprintf("Treat at most %d plots (top-K by CATE)", plot_n_top_10_percent)
+  ),
+  Estimate = c(
+    policy_unconstrained_plots$treat_all_value,
+    policy_unconstrained_plots$treat_none_value,
+    policy_unconstrained_plots$best_blanket_value,
+    policy_unconstrained_plots$predicted_value,
+    policy_top10_plots$predicted_value
+  ),
+  CI_lower = c(
+    policy_unconstrained_plots$inference$treat_all_value_ci[1],
+    policy_unconstrained_plots$inference$treat_none_value_ci[1],
+    policy_unconstrained_plots$inference$best_blanket_value_ci[1],
+    policy_unconstrained_plots$inference$predicted_value_ci[1],
+    policy_top10_plots$inference$predicted_value_ci[1]
+  ),
+  CI_upper = c(
+    policy_unconstrained_plots$inference$treat_all_value_ci[2],
+    policy_unconstrained_plots$inference$treat_none_value_ci[2],
+    policy_unconstrained_plots$inference$best_blanket_value_ci[2],
+    policy_unconstrained_plots$inference$predicted_value_ci[2],
+    policy_top10_plots$inference$predicted_value_ci[2]
+  )
+)
+
+knitr::kable(
+policy_value_summary_plots %>%
+  mutate(
+    pct_of_baseline = sprintf("%.1f%%", 100 * Estimate / baseline_mean),
+    pretty = sprintf(
+      "%5.3f %%SOC (95%% CI: %5.3f, %5.3f)",
+      Estimate, CI_lower, CI_upper
+    )
+  ) %>%
+  select(Strategy, Value = pretty, `% of baseline` = pct_of_baseline) %>%
+  print(n = 5)
+)
+
+# Bootstrap-derived treatment-stability scores at the plot level
+nrcs_plot_data$trt_stability_unconstrained <- policy_unconstrained_plots$inference$treatment_stability
+nrcs_plot_data$trt_stability_top10         <- policy_top10_plots$inference$treatment_stability
 ```
 
 Plot-level figure
 
 ```{r cate estimates at the plot-level}
-# naive estimate from regressing differences on baseline
-naive_estimates <- fitted(lm((TC_2019-TC_2016) ~ TC_2016, data = nrcs_plot_data)) 
-nrcs_naive_estimates <- data.frame(Y = naive_estimates, X = nrcs_plot_data$TC_2016)
+# baseline grid for smooth plotting (plot-level analysis only has ~12 points, so
+# we evaluate the CATE and simple regression on a fine grid for the ribbons).
+plot_baseline_soc_grid <- seq(
+  from = min(nrcs_plot_data$TC_2016),
+  to   = max(nrcs_plot_data$TC_2016),
+  length.out = 100
+)
 
-# estimate cate using ols
+# naive (simple regression) estimate of CATE: regress change on baseline %C,
+# with a 95% confidence ribbon for the conditional mean E[change | baseline].
+naive_fit_plots <- lm((TC_2019 - TC_2016) ~ TC_2016, data = nrcs_plot_data)
+naive_pred_plots <- predict(
+  naive_fit_plots,
+  newdata = data.frame(TC_2016 = plot_baseline_soc_grid),
+  interval = "confidence",
+  level = 0.95
+)
+nrcs_naive_estimates <- data.frame(
+  X = plot_baseline_soc_grid,
+  Y = naive_pred_plots[, "fit"],
+  lower = naive_pred_plots[, "lwr"],
+  upper = naive_pred_plots[, "upr"]
+)
+
+# estimate cate using ols (returns HC2-based 95% CIs in `lower`/`upper`)
 cate_estimates_grid <- estimate_cate(
-  Y=nrcs_plot_data$TC_2019, 
-  Z=nrcs_plot_data$treatment, 
+  Y=nrcs_plot_data$TC_2019,
+  Z=nrcs_plot_data$treatment,
   X=as.matrix(nrcs_plot_data$TC_2016),
   learner = learner_ols,
-  x_pop=as.matrix(nrcs_plot_data$TC_2016))
-nrcs_cates_grid <- data.frame(X = nrcs_plot_data$TC_2016, Y = cate_estimates_grid$cate)
+  x_pop=as.matrix(plot_baseline_soc_grid)
+)
+nrcs_cates_grid <- data.frame(
+  X = plot_baseline_soc_grid,
+  Y = cate_estimates_grid$cate,
+  lower = cate_estimates_grid$lower,
+  upper = cate_estimates_grid$upper
+)
 
 nrcs_cate_figure <-  ggplot(nrcs_plot_data, aes(x = TC_2016, y = TC_2019 - TC_2016)) +
+  # 95% CI ribbon for the CATE (HC2 SEs from learner_ols)
+  geom_ribbon(
+    data = nrcs_cates_grid,
+    aes(x = X, ymin = lower, ymax = upper, fill = "Causal (CATE)"),
+    inherit.aes = FALSE,
+    alpha = 0.2
+  ) +
+  # 95% CI ribbon for the simple regression of change on baseline
+  geom_ribbon(
+    data = nrcs_naive_estimates,
+    aes(x = X, ymin = lower, ymax = upper, fill = "Simple regression"),
+    inherit.aes = FALSE,
+    alpha = 0.2
+  ) +
   geom_point(aes(shape = treatment_long), size = 1.5) +
   scale_shape_manual(
     name = "Treatment",
@@ -478,6 +682,13 @@ nrcs_cate_figure <-  ggplot(nrcs_plot_data, aes(x = TC_2016, y = TC_2019 - TC_20
     values = c(
       "Causal (CATE)"  = "solid",
       "Simple regression" = "dashed"
+    )
+  ) +
+  scale_fill_manual(
+    name = "Moderation estimate",
+    values = c(
+      "Causal (CATE)" = "steelblue",
+      "Simple regression" = "darkorange3"
     )
   ) +
   theme_bw() +
